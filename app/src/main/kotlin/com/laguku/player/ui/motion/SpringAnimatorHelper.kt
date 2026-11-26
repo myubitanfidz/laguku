@@ -101,6 +101,24 @@ object SpringAnimatorHelper {
     const val SHEET_ENTER_DURATION_MS = 340L
     const val SHEET_EXIT_DURATION_MS = 280L
 
+    object ScrollEdgeMath {
+        fun computeDissolutionProgress(scrollOffsetPx: Int, maxTransitionPx: Float): Float {
+            if (scrollOffsetPx <= 0 || maxTransitionPx <= 0f) return 0f
+            return (scrollOffsetPx.toFloat() / maxTransitionPx).coerceIn(0f, 1f)
+        }
+    }
+
+    object SwipeDismissMath {
+        fun shouldDismiss(
+            dragDyPx: Float,
+            velocityYPxPerSec: Float,
+            thresholdPx: Float
+        ): Boolean {
+            if (thresholdPx <= 0f) return false
+            return dragDyPx >= thresholdPx || (dragDyPx > thresholdPx * 0.35f && velocityYPxPerSec >= 900f)
+        }
+    }
+
     object AmoledTransitionMath {
         const val AMOLED_STIFFNESS = 380f
         const val AMOLED_DAMPING_RATIO = 0.85f
@@ -116,6 +134,7 @@ object SpringAnimatorHelper {
     private const val CHANNEL_BACKDROP_IN = 2
     private const val CHANNEL_BACKDROP_OUT = 3
     private const val CHANNEL_BG_COLOR = 4
+    private const val CHANNEL_SWIPE_DISMISS = 5
 
     /**
      * Pure JVM-testable semi-implicit Euler spring solver.
@@ -440,13 +459,53 @@ object SpringAnimatorHelper {
         onEnd: (() -> Unit)? = null
     ) {
         applyMorphPivot(view, anchorView, rootView)
-        springReveal(
-            view = view,
-            fromTranslationY = 24f,
-            fromScale = 0.92f,
-            stiffness = SPRING_MORPH_SHEET.stiffness,
-            dampingRatio = SPRING_MORPH_SHEET.dampingRatio,
-            onEnd = onEnd
+        val reduced = isReducedMotionEnabled(view.context)
+        val profile = if (reduced) SPRING_REDUCED_MOTION else SPRING_SMOOTH
+        val silhouetteGlass = findSingleGlassSilhouette(view)
+        cancelSpring(view, CHANNEL_REVEAL)
+        view.visibility = View.VISIBLE
+        if (!hostActive || reduced) {
+            view.alpha = 1f
+            view.translationX = 0f
+            view.translationY = 0f
+            view.scaleX = 1f
+            view.scaleY = 1f
+            silhouetteGlass?.setMaterializationProgress(1f)
+            onEnd?.invoke()
+            return
+        }
+        val fromScale = 0.88f
+        val fromTy = 18f
+        view.alpha = 1f
+        view.translationX = 0f
+        view.translationY = fromTy
+        view.scaleX = fromScale
+        view.scaleY = fromScale
+        silhouetteGlass?.setMaterializationProgress(0.05f)
+        animateSpring(
+            key = view,
+            start = 0f,
+            target = 1f,
+            stiffness = profile.stiffness,
+            dampingRatio = profile.dampingRatio,
+            channel = CHANNEL_REVEAL,
+            onUpdate = { p ->
+                val mat = p.coerceIn(0.05f, 1f)
+                val scale = fromScale + (1f - fromScale) * p
+                view.translationY = fromTy * (1f - p)
+                view.scaleX = scale
+                view.scaleY = scale
+                if (silhouetteGlass != null) {
+                    silhouetteGlass.setMaterializationProgress(mat)
+                } else {
+                    view.alpha = p.coerceIn(0f, 1f)
+                }
+            },
+            onEnd = {
+                silhouetteGlass?.setMaterializationProgress(1f)
+                view.alpha = 1f
+                onEnd?.invoke()
+            }
         )
     }
 
@@ -457,18 +516,132 @@ object SpringAnimatorHelper {
         onEnd: (() -> Unit)? = null
     ) {
         applyMorphPivot(view, anchorView, rootView)
-        springDismiss(
-            view = view,
-            toTranslationY = 24f,
-            toScale = 0.92f,
-            stiffness = SPRING_MORPH_SHEET.stiffness,
-            dampingRatio = SPRING_MORPH_SHEET.dampingRatio,
+        val reduced = isReducedMotionEnabled(view.context)
+        val profile = if (reduced) SPRING_REDUCED_MOTION else SPRING_SMOOTH
+        val silhouetteGlass = findSingleGlassSilhouette(view)
+        cancelSpring(view, CHANNEL_REVEAL)
+        if (view.visibility != View.VISIBLE) {
+            onEnd?.invoke()
+            return
+        }
+        if (!hostActive || reduced) {
+            view.visibility = View.GONE
+            view.alpha = 1f
+            view.translationX = 0f
+            view.translationY = 0f
+            view.scaleX = 1f
+            view.scaleY = 1f
+            view.pivotX = view.width * 0.5f
+            view.pivotY = view.height * 0.5f
+            silhouetteGlass?.setMaterializationProgress(1f)
+            onEnd?.invoke()
+            return
+        }
+        val startScale = view.scaleX
+        val startTy = view.translationY
+        val toScale = 0.88f
+        val toTy = 18f
+        animateSpring(
+            key = view,
+            start = 0f,
+            target = 1f,
+            stiffness = profile.stiffness,
+            dampingRatio = profile.dampingRatio,
+            channel = CHANNEL_REVEAL,
+            onUpdate = { p ->
+                val clamped = p.coerceIn(0f, 1f)
+                view.translationY = startTy + (toTy - startTy) * p
+                val s = startScale + (toScale - startScale) * p
+                view.scaleX = s
+                view.scaleY = s
+                if (silhouetteGlass != null) {
+                    silhouetteGlass.setMaterializationProgress((1f - clamped).coerceAtLeast(0.01f))
+                } else {
+                    view.alpha = 1f - clamped
+                }
+            },
             onEnd = {
+                view.visibility = View.GONE
+                view.alpha = 1f
+                view.translationX = 0f
+                view.translationY = 0f
+                view.scaleX = 1f
+                view.scaleY = 1f
                 view.pivotX = view.width * 0.5f
                 view.pivotY = view.height * 0.5f
+                silhouetteGlass?.setMaterializationProgress(1f)
                 onEnd?.invoke()
             }
         )
+    }
+
+    private fun findSingleGlassSilhouette(view: View): LiquidGlassDrawable? {
+        (view.background as? LiquidGlassDrawable)?.let { return it }
+        val group = view as? ViewGroup ?: return null
+        for (i in 0 until group.childCount) {
+            val childGlass = group.getChildAt(i).background as? LiquidGlassDrawable
+            if (childGlass != null) return childGlass
+        }
+        return null
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    fun attachSwipeToDismiss(
+        dragTarget: View,
+        sheetCard: View,
+        thresholdDp: Float = 84f,
+        onDismiss: () -> Unit
+    ) {
+        val density = dragTarget.resources.displayMetrics.density
+        val thresholdPx = thresholdDp * density
+        var downRawY = 0f
+        var lastRawY = 0f
+        var lastTimeMs = 0L
+        var velocityY = 0f
+        dragTarget.setOnTouchListener { _, event ->
+            val nowMs = android.os.SystemClock.elapsedRealtime()
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    cancelSpring(sheetCard, CHANNEL_SWIPE_DISMISS)
+                    downRawY = event.rawY
+                    lastRawY = event.rawY
+                    lastTimeMs = nowMs
+                    velocityY = 0f
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dy = (event.rawY - downRawY).coerceAtLeast(0f)
+                    val dtSec = ((nowMs - lastTimeMs).coerceAtLeast(1L)) / 1000f
+                    velocityY = (event.rawY - lastRawY) / dtSec
+                    lastRawY = event.rawY
+                    lastTimeMs = nowMs
+                    sheetCard.translationY = dy
+                    true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    val dy = sheetCard.translationY
+                    val isCancel = event.actionMasked == MotionEvent.ACTION_CANCEL
+                    if (!isCancel && SwipeDismissMath.shouldDismiss(dy, velocityY, thresholdPx)) {
+                        sheetCard.translationY = 0f
+                        onDismiss()
+                    } else {
+                        val profile = if (isReducedMotionEnabled(sheetCard.context)) SPRING_REDUCED_MOTION else SPRING_BOUNCY
+                        animateSpring(
+                            key = sheetCard,
+                            start = dy,
+                            target = 0f,
+                            stiffness = profile.stiffness,
+                            dampingRatio = profile.dampingRatio,
+                            valueThreshold = 0.5f,
+                            channel = CHANNEL_SWIPE_DISMISS,
+                            onUpdate = { ty -> sheetCard.translationY = ty }
+                        )
+                    }
+                    true
+                }
+                else -> false
+            }
+        }
     }
 
     private fun applyMorphPivot(view: View, anchorView: View?, rootView: View) {

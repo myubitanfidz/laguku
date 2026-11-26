@@ -55,6 +55,7 @@ import com.laguku.player.service.MorningAlarmConfig
 import com.laguku.player.service.MultiClickMediaMapper
 import com.laguku.player.service.PlaybackService
 import com.laguku.player.ui.glass.CoverPaletteExtractor
+import com.laguku.player.ui.glass.LiquidGlassDrawable
 import com.laguku.player.ui.glass.StackBlur
 import com.laguku.player.ui.library.InsightsSheetView
 import com.laguku.player.ui.library.LibraryUtilitiesSheetView
@@ -113,6 +114,8 @@ class MainActivity : Activity(), AudioEngine.Listener, LibraryView.Callbacks, Pl
     private var amoledNightMode: Boolean = false
     private var amoledOverlayProgress: Float = 0f
     private var pendingShuffleAllFromShortcut: Boolean = false
+    private var currentTransparencyLevel: Float = PlaybackStateStore.DEFAULT_GLASS_TRANSPARENCY
+    private var currentAccessibilityFlags = LiquidGlassDrawable.AccessibilityFlags()
 
     private var backCallback: OnBackInvokedCallback? = null
 
@@ -132,6 +135,8 @@ class MainActivity : Activity(), AudioEngine.Listener, LibraryView.Callbacks, Pl
 
             amoledNightMode = stateStore?.isAmoledNightMode() == true
             applyAmoledNightMode(amoledNightMode, animate = false)
+            currentTransparencyLevel = stateStore?.getGlassTransparencyLevel() ?: PlaybackStateStore.DEFAULT_GLASS_TRANSPARENCY
+            applyGlassSettingsToViews()
             val highlightFrac = stateStore?.getLyricHighlightFraction() ?: PlaybackStateStore.LYRIC_ANCHOR_OPTIMAL
             nowPlayingView.setLyricHighlightFraction(highlightFrac)
 
@@ -190,6 +195,8 @@ class MainActivity : Activity(), AudioEngine.Listener, LibraryView.Callbacks, Pl
 
     override fun onStart() {
         super.onStart()
+        currentAccessibilityFlags = LiquidGlassDrawable.LayerTokens.readSystemAccessibilityFlags(this)
+        applyGlassSettingsToViews()
         SpringAnimatorHelper.setHostActive(true)
         libraryView.setHostActive(true)
         nowPlayingView.setHostActive(true)
@@ -421,7 +428,8 @@ class MainActivity : Activity(), AudioEngine.Listener, LibraryView.Callbacks, Pl
             minDurationEnabled = store.isMinDurationFilterEnabled(),
             alarmConfig = store.getMorningAlarm(),
             twsMappings = mapper.getAllMappings(),
-            blacklistedFolders = store.getBlacklistedFolders()
+            blacklistedFolders = store.getBlacklistedFolders(),
+            glassTransparencyLevel = currentTransparencyLevel
         )
         showSheet(utilitiesSheet)
     }
@@ -663,6 +671,12 @@ class MainActivity : Activity(), AudioEngine.Listener, LibraryView.Callbacks, Pl
                     val msgRes = if (requested) R.string.pin_widget_requested else R.string.pin_widget_unsupported
                     Toast.makeText(this@MainActivity, getString(msgRes), Toast.LENGTH_SHORT).show()
                 }
+
+                override fun onGlassTransparencyChanged(level: Float) {
+                    currentTransparencyLevel = level.coerceIn(0f, 1f)
+                    stateStore?.setGlassTransparencyLevel(currentTransparencyLevel)
+                    applyGlassSettingsToViews()
+                }
             }
         }
 
@@ -694,6 +708,15 @@ class MainActivity : Activity(), AudioEngine.Listener, LibraryView.Callbacks, Pl
             tapToSyncSheet.applyBottomInset(navBars.bottom)
             insets
         }
+    }
+
+    private fun applyGlassSettingsToViews() {
+        libraryView.setGlassTransparency(currentTransparencyLevel)
+        libraryView.setAccessibilityFlags(currentAccessibilityFlags)
+        nowPlayingView.setGlassTransparency(currentTransparencyLevel)
+        nowPlayingView.setAccessibilityFlags(currentAccessibilityFlags)
+        utilitiesSheet.setGlassTransparency(currentTransparencyLevel)
+        utilitiesSheet.setAccessibilityFlags(currentAccessibilityFlags)
     }
 
     private fun openAudioLabSheet() {

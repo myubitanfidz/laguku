@@ -11,6 +11,7 @@ import android.view.View
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.SeekBar
 import android.widget.Switch
 import android.widget.TextView
 import com.laguku.player.R
@@ -45,6 +46,7 @@ class LibraryUtilitiesSheetView(
         fun onImportBackupJson()
         fun onUnhideBlacklistedFolder(folderPath: String)
         fun onPinWidgetToHomeScreen()
+        fun onGlassTransparencyChanged(level: Float)
     }
 
     var callbacks: Callbacks? = null
@@ -76,11 +78,20 @@ class LibraryUtilitiesSheetView(
         applyPalette(newPalette)
     }
 
+    fun setGlassTransparency(level: Float) {
+        sheetGlass.setContinuousTransparency(level)
+    }
+
+    fun setAccessibilityFlags(flags: LiquidGlassDrawable.AccessibilityFlags) {
+        sheetGlass.setAccessibilityFlags(flags)
+    }
+
     fun bindState(
         minDurationEnabled: Boolean,
         alarmConfig: MorningAlarmConfig,
         twsMappings: Map<ClickGesture, MediaAction>,
-        blacklistedFolders: Set<String>
+        blacklistedFolders: Set<String>,
+        glassTransparencyLevel: Float = 0.50f
     ) {
         bodyContainer.removeAllViews()
 
@@ -102,6 +113,44 @@ class LibraryUtilitiesSheetView(
         addToggleRow("Sembunyikan Audio < 30 Detik", minDurationEnabled) { checked ->
             callbacks?.onToggleMinDurationFilter(checked)
         }
+
+        // Continuous Transparency Slider (iOS 27 Liquid Glass)
+        addSectionTitle("Kejernihan Kaca (Liquid Glass)")
+        val transparencyRow = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            minimumHeight = dp(48)
+        }
+        val pctLabel = TextView(context).apply {
+            text = "${(glassTransparencyLevel * 100f).toInt()}%"
+            setTextColor(0xE6FFFFFF.toInt())
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            fontFeatureSettings = "tnum"
+            gravity = Gravity.END or Gravity.CENTER_VERTICAL
+        }
+        val transparencySeek = SeekBar(context).apply {
+            max = 100
+            progress = (glassTransparencyLevel.coerceIn(0f, 1f) * 100f).toInt()
+            minimumHeight = dp(48)
+            progressTintList = ColorStateList.valueOf(palette.accentGlow)
+            thumbTintList = ColorStateList.valueOf(0xFFFFFFFF.toInt())
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                    pctLabel.text = "$progress%"
+                    if (fromUser) {
+                        callbacks?.onGlassTransparencyChanged(progress / 100f)
+                    }
+                }
+                override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+                override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+            })
+        }
+        transparencyRow.addView(transparencySeek, LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginEnd = dp(8) })
+        transparencyRow.addView(pctLabel, LinearLayout.LayoutParams(dp(44), dp(48)))
+        bodyContainer.addView(transparencyRow, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply {
+            bottomMargin = dp(8)
+        })
 
         // Morning Alarm
         addSectionTitle("Alarm Pagi Fade-In 30 Detik")
@@ -188,9 +237,15 @@ class LibraryUtilitiesSheetView(
         sheetCard.apply {
             orientation = LinearLayout.VERTICAL
             background = sheetGlass
-            setPadding(dp(16), dp(16), dp(16), dp(18))
+            setPadding(dp(16), dp(10), dp(16), dp(18))
             elevation = 20f * density
             isClickable = true
+        }
+        val grabberHandle = View(context).apply {
+            background = GradientDrawable().apply {
+                setColor(0x55FFFFFF)
+                cornerRadius = 2f * density
+            }
         }
         val headerRow = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -224,8 +279,14 @@ class LibraryUtilitiesSheetView(
             addView(bodyContainer, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
         }
         val maxH = (resources.displayMetrics.heightPixels * 0.54f).toInt()
+        sheetCard.addView(grabberHandle, LinearLayout.LayoutParams(dp(36), dp(4)).apply {
+            gravity = Gravity.CENTER_HORIZONTAL
+            bottomMargin = dp(10)
+        })
         sheetCard.addView(headerRow, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(10) })
         sheetCard.addView(scroll, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, maxH))
+        SpringAnimatorHelper.attachSwipeToDismiss(grabberHandle, sheetCard, onDismiss = onDismiss)
+        SpringAnimatorHelper.attachSwipeToDismiss(headerRow, sheetCard, onDismiss = onDismiss)
         addView(sheetCard, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
     }
 

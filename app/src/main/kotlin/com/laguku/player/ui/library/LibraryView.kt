@@ -167,11 +167,6 @@ class LibraryView(
     private val shuffleAllText = TextView(context)
     private val shuffleAllGlass = LiquidGlassDrawable(context, 24f)
 
-    private val searchTogglePill = LinearLayout(context)
-    private val searchToggleIcon = ImageView(context)
-    private val searchToggleText = TextView(context)
-    private val searchToggleGlass = LiquidGlassDrawable(context, 24f)
-
     private val utilitiesPill = LinearLayout(context)
     private val utilitiesIcon = ImageView(context)
     private val utilitiesGlass = LiquidGlassDrawable(context, 24f)
@@ -181,8 +176,13 @@ class LibraryView(
     private val exportBtn = TextView(context)
     private val createPlaylistBtn = TextView(context)
 
-    // Bottom 5-tab interactive glass scrub bar
+    // Bottom 5-tab interactive glass scrub bar + detached circular Search capsule
+    private val bottomNavRow = LinearLayout(context)
     private val bottomScrubBar = InteractiveGlassScrubView(context, 24f)
+    private val searchCapsuleBtn = ImageButton(context)
+    private val searchCapsuleGlass = LiquidGlassDrawable(context, 28f)
+    private val topDissolutionEdge = View(context)
+    private val bottomDissolutionEdge = View(context)
     private val tabViews = ArrayList<TabItemView>(5)
     private var isNavBarCompact: Boolean = false
 
@@ -219,6 +219,34 @@ class LibraryView(
     fun setPalette(newPalette: CoverPalette) {
         palette = newPalette
         applyPalette(newPalette)
+    }
+
+    fun setGlassTransparency(level: Float) {
+        searchGlass.setContinuousTransparency(level)
+        (drillBackBtn.background as? LiquidGlassDrawable)?.setContinuousTransparency(level)
+        shuffleAllGlass.setContinuousTransparency(level)
+        searchCapsuleGlass.setContinuousTransparency(level)
+        utilitiesGlass.setContinuousTransparency(level)
+        (permissionGrantBtn.background as? LiquidGlassDrawable)?.setContinuousTransparency(level)
+        (importBtn.background as? LiquidGlassDrawable)?.setContinuousTransparency(level)
+        (exportBtn.background as? LiquidGlassDrawable)?.setContinuousTransparency(level)
+        (createPlaylistBtn.background as? LiquidGlassDrawable)?.setContinuousTransparency(level)
+        miniPlayerGlass.setContinuousTransparency(level)
+        bottomScrubBar.setGlassTransparency(level)
+    }
+
+    fun setAccessibilityFlags(flags: LiquidGlassDrawable.AccessibilityFlags) {
+        searchGlass.setAccessibilityFlags(flags)
+        (drillBackBtn.background as? LiquidGlassDrawable)?.setAccessibilityFlags(flags)
+        shuffleAllGlass.setAccessibilityFlags(flags)
+        searchCapsuleGlass.setAccessibilityFlags(flags)
+        utilitiesGlass.setAccessibilityFlags(flags)
+        (permissionGrantBtn.background as? LiquidGlassDrawable)?.setAccessibilityFlags(flags)
+        (importBtn.background as? LiquidGlassDrawable)?.setAccessibilityFlags(flags)
+        (exportBtn.background as? LiquidGlassDrawable)?.setAccessibilityFlags(flags)
+        (createPlaylistBtn.background as? LiquidGlassDrawable)?.setAccessibilityFlags(flags)
+        miniPlayerGlass.setAccessibilityFlags(flags)
+        bottomScrubBar.setAccessibilityFlags(flags)
     }
 
     fun setLibraryData(
@@ -345,6 +373,7 @@ class LibraryView(
                     if (nextCompact != isNavBarCompact) {
                         setNavBarCompact(nextCompact)
                     }
+                    updateListScrollDissolution()
                 }
             })
         }
@@ -383,7 +412,23 @@ class LibraryView(
             }
             clipToOutline = true
         }
+        topDissolutionEdge.apply {
+            background = GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(0xE0131316.toInt(), 0x00131316)
+            )
+            alpha = 0f
+        }
+        bottomDissolutionEdge.apply {
+            background = GradientDrawable(
+                GradientDrawable.Orientation.BOTTOM_TOP,
+                intArrayOf(0xE0131316.toInt(), 0x00131316)
+            )
+            alpha = 0f
+        }
         listContainer.addView(recyclerView, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+        listContainer.addView(topDissolutionEdge, LayoutParams(LayoutParams.MATCH_PARENT, dp(24), Gravity.TOP))
+        listContainer.addView(bottomDissolutionEdge, LayoutParams(LayoutParams.MATCH_PARENT, dp(24), Gravity.BOTTOM))
         listContainer.addView(emptyStateView, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, Gravity.CENTER))
         listContainer.addView(permissionCard, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT, Gravity.CENTER))
         mainColumn.addView(listContainer, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, 0, 1f))
@@ -466,11 +511,43 @@ class LibraryView(
             }
         )
 
-        // 3e. Bottom 5-Tab Interactive Glass Scrub Navigation
+        // 3e. Bottom 5-Tab Interactive Glass Scrub Navigation + Detached Circular Search Capsule
         buildBottomTabBar()
-        bottomDock.addView(
+        bottomNavRow.apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            clipChildren = false
+            clipToPadding = false
+        }
+        searchCapsuleBtn.apply {
+            setImageResource(R.drawable.ic_search)
+            imageTintList = ColorStateList.valueOf(0xFFFFFFFF.toInt())
+            contentDescription = context.getString(R.string.search_label)
+            scaleType = ImageView.ScaleType.CENTER_INSIDE
+            background = searchCapsuleGlass
+            elevation = 0f
+            outlineProvider = object : ViewOutlineProvider() {
+                override fun getOutline(view: View, outline: Outline) {
+                    val r = minOf(view.width, view.height) * 0.5f
+                    outline.setRoundRect(0, 0, view.width, view.height, r)
+                }
+            }
+            clipToOutline = true
+            setPadding(dp(16), dp(16), dp(16), dp(16))
+            SpringAnimatorHelper.attachPressFeedback(this)
+            setOnClickListener { toggleSearchBar() }
+        }
+        bottomNavRow.addView(
             bottomScrubBar,
-            LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, dp(60))
+            LinearLayout.LayoutParams(0, dp(60), 1f).apply { marginEnd = dp(10) }
+        )
+        bottomNavRow.addView(
+            searchCapsuleBtn,
+            LinearLayout.LayoutParams(dp(56), dp(56))
+        )
+        bottomDock.addView(
+            bottomNavRow,
+            LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT)
         )
     }
 
@@ -544,33 +621,6 @@ class LibraryView(
         shuffleAllPill.addView(shuffleAllIcon, LinearLayout.LayoutParams(dp(18), dp(18)))
         shuffleAllPill.addView(shuffleAllText, LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT))
 
-        searchTogglePill.apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-            minimumHeight = dp(48)
-            background = searchToggleGlass
-            elevation = 0f
-            outlineProvider = pillOutlineProvider
-            clipToOutline = true
-            setPadding(dp(14), dp(8), dp(14), dp(8))
-            SpringAnimatorHelper.attachPressFeedback(this)
-            setOnClickListener { toggleSearchBar() }
-        }
-        searchToggleIcon.apply {
-            setImageResource(R.drawable.ic_search)
-            imageTintList = ColorStateList.valueOf(0xFFFFFFFF.toInt())
-        }
-        searchToggleText.apply {
-            text = context.getString(R.string.search_label)
-            setTextColor(0xFFFFFFFF.toInt())
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            maxLines = 1
-            setPadding(dp(6), 0, 0, 0)
-        }
-        searchTogglePill.addView(searchToggleIcon, LinearLayout.LayoutParams(dp(18), dp(18)))
-        searchTogglePill.addView(searchToggleText, LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT))
-
         utilitiesPill.apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
@@ -598,10 +648,6 @@ class LibraryView(
         quickActionRow.addView(
             shuffleAllPill,
             LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginEnd = dp(8) }
-        )
-        quickActionRow.addView(
-            searchTogglePill,
-            LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT, dp(48)).apply { marginEnd = dp(8) }
         )
         quickActionRow.addView(
             utilitiesPill,
@@ -813,19 +859,29 @@ class LibraryView(
         rebuildDisplayedEntries()
     }
 
+    private fun updateListScrollDissolution() {
+        val topAlpha = SpringAnimatorHelper.ScrollEdgeMath.computeDissolutionProgress(
+            recyclerView.computeVerticalScrollOffset(),
+            dp(36).toFloat()
+        )
+        val bottomAlpha = if (recyclerView.canScrollVertically(1)) 1f else 0f
+        topDissolutionEdge.alpha = topAlpha
+        bottomDissolutionEdge.alpha = bottomAlpha
+    }
+
     private fun toggleSearchBar() {
         val visible = searchBox.visibility == View.VISIBLE
         if (visible) {
             searchBox.setText("")
             searchQuery = ""
             SpringAnimatorHelper.springDismiss(searchBox, toTranslationY = dp(8).toFloat(), toScale = 0.97f)
-            searchToggleGlass.setTintProfile(0.56f, 0.14f, preferAccentGlow = false)
-            searchToggleIcon.imageTintList = ColorStateList.valueOf(0xFFFFFFFF.toInt())
+            searchCapsuleGlass.setTintProfile(0.56f, 0.10f, preferAccentGlow = false)
+            searchCapsuleBtn.imageTintList = ColorStateList.valueOf(0xFFFFFFFF.toInt())
             rebuildDisplayedEntries()
         } else {
             SpringAnimatorHelper.springReveal(searchBox, fromTranslationY = dp(8).toFloat(), fromScale = 0.97f)
-            searchToggleGlass.setTintProfile(0.35f, 0.45f, preferAccentGlow = true)
-            searchToggleIcon.imageTintList = ColorStateList.valueOf(palette.accentGlow)
+            searchCapsuleGlass.setTintProfile(0.35f, 0.45f, preferAccentGlow = true)
+            searchCapsuleBtn.imageTintList = ColorStateList.valueOf(palette.accentGlow)
             searchBox.requestFocus()
         }
     }
@@ -993,12 +1049,12 @@ class LibraryView(
         shuffleAllGlass.setPalette(newPalette)
         shuffleAllGlass.setTintProfile(baseFraction = 0.34f, accentFraction = 0.45f, preferAccentGlow = true)
         shuffleAllIcon.imageTintList = ColorStateList.valueOf(newPalette.accentGlow)
-        searchToggleGlass.setPalette(newPalette)
-        searchToggleGlass.setTintProfile(baseFraction = 0.56f, accentFraction = 0.10f, preferAccentGlow = false)
+        searchCapsuleGlass.setPalette(newPalette)
+        searchCapsuleGlass.setTintProfile(baseFraction = 0.56f, accentFraction = 0.10f, preferAccentGlow = false)
         utilitiesGlass.setPalette(newPalette)
         utilitiesGlass.setTintProfile(baseFraction = 0.56f, accentFraction = 0.10f, preferAccentGlow = false)
         if (searchBox.visibility == View.VISIBLE) {
-            searchToggleIcon.imageTintList = ColorStateList.valueOf(newPalette.accentGlow)
+            searchCapsuleBtn.imageTintList = ColorStateList.valueOf(newPalette.accentGlow)
         }
         (permissionGrantBtn.background as? LiquidGlassDrawable)?.setPalette(newPalette)
         (importBtn.background as? LiquidGlassDrawable)?.setPalette(newPalette)

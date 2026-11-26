@@ -262,6 +262,8 @@ class NowPlayingView(
 
     private val lyricsContainer = FrameLayout(context)
     private val lyricsRecycler = RecyclerView(context)
+    private val lyricsTopDissolution = View(context)
+    private val lyricsBottomDissolution = View(context)
     private val lyricsEmptyContainer = LinearLayout(context)
     private val lyricsEmptyView = TextView(context)
     private val lyricsFetchStatusView = TextView(context)
@@ -552,6 +554,42 @@ class NowPlayingView(
     fun setPalette(newPalette: CoverPalette) {
         palette = newPalette
         applyPalette(newPalette)
+    }
+
+    fun setGlassTransparency(level: Float) {
+        qualityBadgeGlass.setContinuousTransparency(level)
+        returnPillGlass.setContinuousTransparency(level)
+        lyricTunerToggleGlass.setContinuousTransparency(level)
+        lyricTunerPanelGlass.setContinuousTransparency(level)
+        searchOnlineGlass.setContinuousTransparency(level)
+        tapToSyncEmptyGlass.setContinuousTransparency(level)
+        lyricQuoteGlass.setContinuousTransparency(level)
+        dockIconGlassFav.setContinuousTransparency(level)
+        dockIconGlassQueue.setContinuousTransparency(level)
+        playPauseGlass.setContinuousTransparency(level)
+        labPillGlass.setContinuousTransparency(level)
+        timerPillGlass.setContinuousTransparency(level)
+        amoledPillGlass.setContinuousTransparency(level)
+        modalCardGlass.setContinuousTransparency(level)
+        modeScrubPill.setGlassTransparency(level)
+    }
+
+    fun setAccessibilityFlags(flags: LiquidGlassDrawable.AccessibilityFlags) {
+        qualityBadgeGlass.setAccessibilityFlags(flags)
+        returnPillGlass.setAccessibilityFlags(flags)
+        lyricTunerToggleGlass.setAccessibilityFlags(flags)
+        lyricTunerPanelGlass.setAccessibilityFlags(flags)
+        searchOnlineGlass.setAccessibilityFlags(flags)
+        tapToSyncEmptyGlass.setAccessibilityFlags(flags)
+        lyricQuoteGlass.setAccessibilityFlags(flags)
+        dockIconGlassFav.setAccessibilityFlags(flags)
+        dockIconGlassQueue.setAccessibilityFlags(flags)
+        playPauseGlass.setAccessibilityFlags(flags)
+        labPillGlass.setAccessibilityFlags(flags)
+        timerPillGlass.setAccessibilityFlags(flags)
+        amoledPillGlass.setAccessibilityFlags(flags)
+        modalCardGlass.setAccessibilityFlags(flags)
+        modeScrubPill.setAccessibilityFlags(flags)
     }
 
     fun setCoverArtwork(bitmap: Bitmap?) {
@@ -1046,6 +1084,15 @@ class NowPlayingView(
                 }
             }
             addOnScrollListener(object : RecyclerView.OnScrollListener() {
+                override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
+                    val topAlpha = SpringAnimatorHelper.ScrollEdgeMath.computeDissolutionProgress(
+                        recyclerView.computeVerticalScrollOffset(),
+                        dp(40).toFloat()
+                    )
+                    lyricsTopDissolution.alpha = topAlpha
+                    lyricsBottomDissolution.alpha = if (recyclerView.canScrollVertically(1)) 1f else 0f
+                }
+
                 override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
                     if (newState == RecyclerView.SCROLL_STATE_DRAGGING && parsedLyrics.isSynced && parsedLyrics.lines.isNotEmpty()) {
                         lyricsAdapter.cancelScrollAnimation(recyclerView)
@@ -1318,7 +1365,23 @@ class NowPlayingView(
             LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT)
         )
 
+        lyricsTopDissolution.apply {
+            background = GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(0xAA000000.toInt(), 0x00000000)
+            )
+            alpha = 0f
+        }
+        lyricsBottomDissolution.apply {
+            background = GradientDrawable(
+                GradientDrawable.Orientation.BOTTOM_TOP,
+                intArrayOf(0xAA000000.toInt(), 0x00000000)
+            )
+            alpha = 0f
+        }
         lyricsContainer.addView(lyricsRecycler, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+        lyricsContainer.addView(lyricsTopDissolution, LayoutParams(LayoutParams.MATCH_PARENT, dp(28), Gravity.TOP))
+        lyricsContainer.addView(lyricsBottomDissolution, LayoutParams(LayoutParams.MATCH_PARENT, dp(28), Gravity.BOTTOM))
         lyricsContainer.addView(lyricsEmptyContainer, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, Gravity.CENTER))
         lyricsContainer.addView(
             bottomLyricOverlay,
@@ -1414,7 +1477,7 @@ class NowPlayingView(
         if (lyricTunerState.isExpanded) {
             if (animate) {
                 SpringAnimatorHelper.springDismiss(lyricTunerToggleBtn, toScale = 0.88f)
-                SpringAnimatorHelper.springReveal(lyricTunerPanel, fromTranslationY = dp(14).toFloat(), fromScale = 0.94f)
+                SpringAnimatorHelper.springMorphReveal(lyricTunerPanel, lyricTunerToggleBtn, lyricsContainer)
             } else {
                 lyricTunerToggleBtn.visibility = View.GONE
                 lyricTunerPanel.visibility = View.VISIBLE
@@ -1425,7 +1488,7 @@ class NowPlayingView(
             }
         } else {
             if (animate) {
-                SpringAnimatorHelper.springDismiss(lyricTunerPanel, toTranslationY = dp(14).toFloat(), toScale = 0.94f)
+                SpringAnimatorHelper.springMorphDismiss(lyricTunerPanel, lyricTunerToggleBtn, lyricsContainer)
                 SpringAnimatorHelper.springReveal(lyricTunerToggleBtn, fromTranslationY = dp(6).toFloat(), fromScale = 0.90f)
             } else {
                 lyricTunerPanel.visibility = View.GONE
@@ -1890,9 +1953,15 @@ class NowPlayingView(
         modalCard.apply {
             orientation = LinearLayout.VERTICAL
             background = modalCardGlass
-            setPadding(dp(20), dp(20), dp(20), dp(16))
+            setPadding(dp(20), dp(12), dp(20), dp(16))
             elevation = 20f * density
             isClickable = true
+        }
+        val modalGrabber = View(context).apply {
+            background = GradientDrawable().apply {
+                setColor(0x55FFFFFF)
+                cornerRadius = 2f * density
+            }
         }
 
         modalTitleView.apply {
@@ -1906,7 +1975,13 @@ class NowPlayingView(
             gravity = Gravity.END
         }
 
+        modalCard.addView(modalGrabber, LinearLayout.LayoutParams(dp(36), dp(4)).apply {
+            gravity = Gravity.CENTER_HORIZONTAL
+            bottomMargin = dp(12)
+        })
         modalCard.addView(modalTitleView, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
+        SpringAnimatorHelper.attachSwipeToDismiss(modalGrabber, modalCard) { closeModal() }
+        SpringAnimatorHelper.attachSwipeToDismiss(modalTitleView, modalCard) { closeModal() }
         modalCard.addView(
             modalBody,
             LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply {

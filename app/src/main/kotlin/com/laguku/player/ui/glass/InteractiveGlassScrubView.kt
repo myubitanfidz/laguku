@@ -230,6 +230,18 @@ class InteractiveGlassScrubView(
         invalidate()
     }
 
+    fun setGlassTransparency(level: Float) {
+        containerGlass.setContinuousTransparency(level)
+        indicatorGlass.setContinuousTransparency(level)
+        invalidate()
+    }
+
+    fun setAccessibilityFlags(flags: LiquidGlassDrawable.AccessibilityFlags) {
+        containerGlass.setAccessibilityFlags(flags)
+        indicatorGlass.setAccessibilityFlags(flags)
+        invalidate()
+    }
+
     fun getSelectedIndex(): Int = selectedIndex
 
     fun setSelectedIndex(index: Int, animate: Boolean = true) {

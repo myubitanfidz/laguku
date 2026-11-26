@@ -52,6 +52,7 @@ class PlaybackStateStore(private val storageFile: File) {
     private var minDurationFilterEnabled: Boolean = true
     private var amoledNightMode: Boolean = false
     private var lyricHighlightFraction: Float = LYRIC_ANCHOR_OPTIMAL
+    private var glassTransparencyLevel: Float = DEFAULT_GLASS_TRANSPARENCY
     private var morningAlarm: MorningAlarmConfig = MorningAlarmConfig()
     private var dspConfig: AudioDspConfig = AudioDspConfig()
 
@@ -325,6 +326,15 @@ class PlaybackStateStore(private val storageFile: File) {
         }
     }
 
+    fun getGlassTransparencyLevel(): Float = synchronized(lock) { glassTransparencyLevel }
+
+    fun setGlassTransparencyLevel(level: Float) {
+        synchronized(lock) {
+            glassTransparencyLevel = level.coerceIn(0f, 1f)
+            saveLocked()
+        }
+    }
+
     fun getMorningAlarm(): MorningAlarmConfig = synchronized(lock) { morningAlarm }
 
     fun setMorningAlarm(config: MorningAlarmConfig) {
@@ -496,6 +506,10 @@ class PlaybackStateStore(private val storageFile: File) {
                 root["lyricHighlightFraction"],
                 LYRIC_ANCHOR_OPTIMAL.toDouble()
             ).toFloat().coerceIn(0.20f, 0.60f)
+            glassTransparencyLevel = SimpleJson.asDouble(
+                root["glassTransparencyLevel"],
+                DEFAULT_GLASS_TRANSPARENCY.toDouble()
+            ).toFloat().coerceIn(0f, 1f)
 
             (root["morningAlarm"] as? Map<*, *>)?.let { am ->
                 morningAlarm = MorningAlarmConfig(
@@ -585,6 +599,7 @@ class PlaybackStateStore(private val storageFile: File) {
         root["minDurationFilter"] = minDurationFilterEnabled
         root["amoledNightMode"] = amoledNightMode
         root["lyricHighlightFraction"] = lyricHighlightFraction
+        root["glassTransparencyLevel"] = glassTransparencyLevel
         root["morningAlarm"] = mapOf(
             "enabled" to morningAlarm.enabled,
             "hour" to morningAlarm.hour,
@@ -621,6 +636,7 @@ class PlaybackStateStore(private val storageFile: File) {
         const val LYRIC_ANCHOR_TOP = 0.28f
         const val LYRIC_ANCHOR_OPTIMAL = 0.36f
         const val LYRIC_ANCHOR_CENTER = 0.48f
+        const val DEFAULT_GLASS_TRANSPARENCY = 0.50f
         private const val MAX_TRACK_STATS = 120
         private const val MAX_ARTIST_STATS = 80
 
