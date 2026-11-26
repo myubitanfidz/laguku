@@ -87,13 +87,19 @@ class WidgetPillTest {
     }
 
     @Test
-    fun widgetManifestAndMetadata_includeMiuiAndAndroid12CompatibilityAttributes() {
+    fun widgetManifestAndMetadata_includeMiui13CompatibilityAndKeepRules() {
         val manifest = resolveProjectFile("app/src/main/AndroidManifest.xml").readText()
         assertTrue(manifest.contains("android:name=\".widget.LagukuPillWidgetProvider\""))
         assertTrue(manifest.contains("android:exported=\"true\""))
         assertTrue(manifest.contains("android:label=\"@string/widget_name\""))
         assertTrue(manifest.contains("android.appwidget.action.APPWIDGET_UPDATE"))
-        assertTrue(manifest.contains("android.appwidget.action.APPWIDGET_ENABLED"))
+        assertTrue(manifest.contains("android.appwidget.provider"))
+        assertTrue(manifest.contains("@xml/laguku_pill_widget_info"))
+
+        val keepXml = resolveProjectFile("app/src/main/res/raw/keep.xml").readText()
+        assertTrue(keepXml.contains("@xml/laguku_pill_widget_info"))
+        assertTrue(keepXml.contains("@layout/widget_laguku_pill"))
+        assertTrue(keepXml.contains("@drawable/ic_default_album_cover"))
 
         val info = resolveProjectFile("app/src/main/res/xml/laguku_pill_widget_info.xml").readText()
         assertTrue(info.contains("android:minWidth=\"250dp\""))
@@ -104,8 +110,8 @@ class WidgetPillTest {
         assertTrue(info.contains("android:widgetCategory=\"home_screen\""))
         assertTrue(info.contains("android:updatePeriodMillis=\"0\""))
         assertTrue(info.contains("android:initialLayout=\"@layout/widget_laguku_pill\""))
-        assertTrue(info.contains("android:previewLayout=\"@layout/widget_laguku_pill\""))
         assertTrue(info.contains("android:previewImage=\"@drawable/ic_default_album_cover\""))
+        assertFalse("MIUI 13 parser must not reject previewLayout", info.contains("android:previewLayout"))
 
         val layout = resolveProjectFile("app/src/main/res/layout/widget_laguku_pill.xml").readText()
         assertFalse("RemoteViews layout must not resolve launcher theme attributes", layout.contains("?android:attr/"))
@@ -137,6 +143,8 @@ class WidgetPillTest {
 
         val strings = resolveProjectFile("app/src/main/res/values/strings.xml").readText()
         assertTrue(strings.contains("name=\"widget_name\">Laguku<"))
+        assertTrue(strings.contains("ketuk Semua"))
         assertTrue(strings.contains("Widget Android"))
+        assertTrue(strings.contains("pilih Laguku"))
     }
 }

@@ -124,5 +124,5 @@
     <string name="lyric_source_fmt">Sumber: %1$s</string>
     <string name="pin_widget_label">Pasang Widget ke Layar Utama</string>
     <string name="pin_widget_requested">Permintaan widget dikirim ke layar utama</string>
-    <string name="pin_widget_unsupported">Pasang otomatis tidak didukung launcher ini. Cubit layar utama &gt; Widget &gt; gulir ke paling bawah ke bagian Widget Android &gt; Laguku.</string>
+    <string name="pin_widget_unsupported">Buka Layar Utama -&gt; cubit layar -&gt; Widget -&gt; ketuk Semua -&gt; gulir ke bawah ke Widget Android -&gt; pilih Laguku.</string>
 </resources>

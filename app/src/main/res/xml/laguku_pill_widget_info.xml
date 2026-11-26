@@ -6,7 +6,6 @@
     android:minResizeWidth="180dp"
     android:minWidth="250dp"
     android:previewImage="@drawable/ic_default_album_cover"
-    android:previewLayout="@layout/widget_laguku_pill"
     android:resizeMode="horizontal"
     android:targetCellHeight="1"
     android:targetCellWidth="4"

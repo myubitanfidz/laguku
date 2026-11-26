@@ -670,11 +670,15 @@ class MainActivity : Activity(), AudioEngine.Listener, LibraryView.Callbacks, Pl
                     val status = LagukuPillWidgetProvider.requestPinWidgetStatus(this@MainActivity)
                     val requested = status == LagukuPillWidgetProvider.PinWidgetStatus.PIN_REQUEST_SENT
                     val msgRes = LagukuPillWidgetProvider.resolvePinFeedbackRes(status)
-                    Toast.makeText(
-                        this@MainActivity,
-                        getString(msgRes),
-                        if (requested) Toast.LENGTH_SHORT else Toast.LENGTH_LONG
-                    ).show()
+                    if (requested) {
+                        Toast.makeText(this@MainActivity, getString(msgRes), Toast.LENGTH_SHORT).show()
+                    } else {
+                        AlertDialog.Builder(this@MainActivity, android.R.style.Theme_Material_Dialog_Alert)
+                            .setTitle(R.string.pin_widget_label)
+                            .setMessage(msgRes)
+                            .setPositiveButton(android.R.string.ok, null)
+                            .show()
+                    }
                     return requested
                 }
 
