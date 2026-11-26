@@ -146,6 +146,7 @@ class NowPlayingView(
     private var lyricHighlightFraction: Float = PlaybackStateStore.LYRIC_ANCHOR_OPTIMAL
     private val lyricTunerState = LyricTunerState()
     private var lastActiveLayoutHeight: Int = 0
+    private var pendingInitialLyricSnap: Boolean = false
     private var plainLyricsFallback: String? = null
 
     private var currentAuditStatus: LosslessAuditStatus = LosslessAuditStatus.NOT_APPLICABLE
@@ -209,6 +210,7 @@ class NowPlayingView(
     private val offsetValueTv = TextView(context)
     private val offsetPlusBtn = TextView(context)
     private val offsetSaveBtn = TextView(context)
+    private val offsetSaveGlass = LiquidGlassDrawable(context, 14f)
     private val anchorRow = LinearLayout(context)
     private val anchorTopBtn = TextView(context)
     private val anchorOptimalBtn = TextView(context)
@@ -216,8 +218,8 @@ class NowPlayingView(
     private val anchorTopGlass = LiquidGlassDrawable(context, 12f)
     private val anchorOptimalGlass = LiquidGlassDrawable(context, 12f)
     private val anchorCenterGlass = LiquidGlassDrawable(context, 12f)
-    private val tunerSearchBtn = TextView(context)
-    private val tunerResyncBtn = TextView(context)
+    private val tunerEditBtn = TextView(context)
+    private val tunerEditGlass = LiquidGlassDrawable(context, 12f)
 
     private val lyricQuoteBar = LinearLayout(context)
     private val lyricQuoteGlass = LiquidGlassDrawable(context, 18f)
@@ -377,9 +379,14 @@ class NowPlayingView(
         lyricHighlightFraction = fraction.coerceIn(0.20f, 0.60f)
         lyricsAdapter.setHighlightFraction(lyricHighlightFraction)
         updateHighlightAnchorButtons()
+        applyLyricsViewportPadding(lyricsRecycler.height)
         val active = lyricsAdapter.getActiveIndex()
-        if (active >= 0 && displayMode == DisplayMode.LYRICS_FOCUS && !manualScrollPaused) {
-            lyricsAdapter.scrollToActiveLine(lyricsRecycler, active, animated = false)
+        if (displayMode == DisplayMode.LYRICS_FOCUS && !manualScrollPaused && lyricsAdapter.getLines().isNotEmpty()) {
+            if (active >= 0) {
+                lyricsAdapter.scrollToActiveLine(lyricsRecycler, active, animated = false)
+            } else {
+                lyricsAdapter.snapToInitialAnchor(lyricsRecycler)
+            }
         }
     }
 
@@ -423,6 +430,8 @@ class NowPlayingView(
         anchorTopGlass.setAmoledProgress(amoledProgress)
         anchorOptimalGlass.setAmoledProgress(amoledProgress)
         anchorCenterGlass.setAmoledProgress(amoledProgress)
+        tunerEditGlass.setAmoledProgress(amoledProgress)
+        offsetSaveGlass.setAmoledProgress(amoledProgress)
         modeScrubPill.invalidate()
     }
 
@@ -456,9 +465,11 @@ class NowPlayingView(
 
     fun setLyrics(parsed: ParsedLyrics) {
         parsedLyrics = parsed
+        lyricsAdapter.cancelScrollAnimation(lyricsRecycler)
         lyricsAdapter.submitLyrics(parsed)
         manualScrollPaused = false
         lastActiveLayoutHeight = 0
+        pendingInitialLyricSnap = parsed.lines.isNotEmpty()
         mainHandler.removeCallbacks(autoResumeRunnable)
         returnToActivePill.visibility = View.GONE
         lyricsEmptyContainer.visibility = if (parsed.lines.isEmpty()) View.VISIBLE else View.GONE
@@ -471,6 +482,25 @@ class NowPlayingView(
 
         val currentPos = audioEngine?.getCurrentPositionMs() ?: 0L
         updateActiveLyricForPosition(currentPos, forceScroll = true)
+
+        if (parsed.lines.isNotEmpty() && lyricsRecycler.height > 0) {
+            applyLyricsViewportPadding(lyricsRecycler.height)
+            pendingInitialLyricSnap = false
+            lyricsRecycler.post {
+                lyricsAdapter.snapToInitialAnchor(lyricsRecycler)
+            }
+        }
+    }
+
+    private fun applyLyricsViewportPadding(viewportHeight: Int) {
+        if (viewportHeight <= 0) return
+        val (padTop, padBottom) = LyricsRecyclerAdapter.LyricWindowMath.computeAnchorPadding(
+            viewportHeight = viewportHeight,
+            anchorFraction = lyricHighlightFraction
+        )
+        if (lyricsRecycler.paddingTop != padTop || lyricsRecycler.paddingBottom != padBottom) {
+            lyricsRecycler.setPadding(0, padTop, 0, padBottom)
+        }
     }
 
     private fun updateLyricSourceBadge(source: LyricSource) {
@@ -871,24 +901,28 @@ class NowPlayingView(
             addOnLayoutChangeListener { rv, _, top, _, bottom, _, _, _, _ ->
                 val h = bottom - top
                 if (h > 0) {
-                    val padTop = (h * 0.18f).toInt()
-                    val padBottom = (h * 0.54f).toInt()
-                    if (rv.paddingTop != padTop || rv.paddingBottom != padBottom) {
-                        rv.setPadding(0, padTop, 0, padBottom)
-                    }
+                    applyLyricsViewportPadding(h)
                     lyricsAdapter.setViewportMargins(
                         topPx = (h * 0.14f).toInt(),
                         bottomPx = dp(64),
                         defaultFadeLengthPx = defaultFadePx
                     )
-                    val activeIdx = lyricsAdapter.getActiveIndex()
-                    if (displayMode == DisplayMode.LYRICS_FOCUS && !manualScrollPaused && activeIdx >= 0) {
-                        val activeChild = (rv as RecyclerView).layoutManager?.findViewByPosition(activeIdx)
-                        val activeH = activeChild?.height ?: 0
-                        if (activeH > 0 && activeH != lastActiveLayoutHeight) {
-                            lastActiveLayoutHeight = activeH
-                            rv.post {
-                                lyricsAdapter.scrollToActiveLine(rv, activeIdx, animated = false)
+                    val recycler = rv as RecyclerView
+                    if (pendingInitialLyricSnap && lyricsAdapter.getLines().isNotEmpty()) {
+                        pendingInitialLyricSnap = false
+                        rv.post {
+                            lyricsAdapter.snapToInitialAnchor(recycler)
+                        }
+                    } else {
+                        val activeIdx = lyricsAdapter.getActiveIndex()
+                        if (displayMode == DisplayMode.LYRICS_FOCUS && !manualScrollPaused && activeIdx >= 0) {
+                            val activeChild = recycler.layoutManager?.findViewByPosition(activeIdx)
+                            val activeH = activeChild?.height ?: 0
+                            if (activeH > 0 && activeH != lastActiveLayoutHeight) {
+                                lastActiveLayoutHeight = activeH
+                                rv.post {
+                                    lyricsAdapter.scrollToActiveLine(recycler, activeIdx, animated = false)
+                                }
                             }
                         }
                     }
@@ -1014,7 +1048,7 @@ class NowPlayingView(
             }
         }
 
-        // Expandable Lyric Tuner Panel (Offset + Highlight Anchor + Simpan auto-collapse)
+        // Expandable Lyric Tuner Panel (2 neat rows: Offset+Source, Anchor+Ubah+Simpan)
         lyricTunerPanel.apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
@@ -1026,9 +1060,12 @@ class NowPlayingView(
 
         lyricSourceBadgeTv.apply {
             setTextColor(0xB8FFFFFF.toInt())
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            setPadding(dp(8), dp(2), dp(8), dp(4))
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+            gravity = Gravity.END or Gravity.CENTER_VERTICAL
+            setPadding(dp(6), 0, dp(2), 0)
             visibility = View.GONE
         }
 
@@ -1041,76 +1078,87 @@ class NowPlayingView(
             setTextColor(0xE6FFFFFF.toInt())
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
             fontFeatureSettings = "tnum"
-            setPadding(dp(8), 0, dp(8), 0)
+            maxLines = 1
+            setPadding(dp(6), 0, dp(6), 0)
         }
         configureCompactPillBtn(offsetPlusBtn, "+0.1s") { adjustLyricOffset(100L) }
-        configureCompactPillBtn(offsetSaveBtn, context.getString(R.string.lyric_offset_save)) {
-            val t = audioEngine?.getCurrentTrack()
-            if (t != null) {
-                onSaveLyricOffset?.invoke(t, userLyricOffsetMs)
-                onSaveLyricSettings?.invoke(t, userLyricOffsetMs, lyricHighlightFraction)
-            }
-            onLyricHighlightChanged?.invoke(lyricHighlightFraction)
-            lyricTunerState.onSavePressed()
-            updateLyricTunerVisibility(animate = true)
-        }
         offsetRow.addView(offsetMinusBtn)
         offsetRow.addView(offsetValueTv)
         offsetRow.addView(offsetPlusBtn)
-        offsetRow.addView(offsetSaveBtn)
+        offsetRow.addView(lyricSourceBadgeTv, LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f))
 
         anchorRow.apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        configureAnchorPillBtn(anchorTopBtn, anchorTopGlass, context.getString(R.string.lyric_anchor_top)) {
+        configureAnchorPillBtn(anchorTopBtn, anchorTopGlass, "28%") {
             setLyricHighlightFraction(PlaybackStateStore.LYRIC_ANCHOR_TOP)
             onLyricHighlightChanged?.invoke(lyricHighlightFraction)
         }
-        configureAnchorPillBtn(anchorOptimalBtn, anchorOptimalGlass, context.getString(R.string.lyric_anchor_optimal)) {
+        configureAnchorPillBtn(anchorOptimalBtn, anchorOptimalGlass, "36%") {
             setLyricHighlightFraction(PlaybackStateStore.LYRIC_ANCHOR_OPTIMAL)
             onLyricHighlightChanged?.invoke(lyricHighlightFraction)
         }
-        configureAnchorPillBtn(anchorCenterBtn, anchorCenterGlass, context.getString(R.string.lyric_anchor_center)) {
+        configureAnchorPillBtn(anchorCenterBtn, anchorCenterGlass, "48%") {
             setLyricHighlightFraction(PlaybackStateStore.LYRIC_ANCHOR_CENTER)
             onLyricHighlightChanged?.invoke(lyricHighlightFraction)
         }
-        anchorRow.addView(anchorTopBtn, LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply { marginEnd = dp(6) })
-        anchorRow.addView(anchorOptimalBtn, LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply { marginEnd = dp(6) })
-        anchorRow.addView(anchorCenterBtn, LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT))
+        configureAnchorPillBtn(tunerEditBtn, tunerEditGlass, "Ubah") {
+            val t = audioEngine?.getCurrentTrack() ?: return@configureAnchorPillBtn
+            val options = arrayOf(
+                context.getString(R.string.lyrics_replace_online),
+                context.getString(R.string.lyrics_resync_offline)
+            )
+            android.app.AlertDialog.Builder(context, android.R.style.Theme_Material_Dialog_Alert)
+                .setItems(options) { _, which ->
+                    lyricTunerState.collapse()
+                    updateLyricTunerVisibility(animate = true)
+                    if (which == 0) {
+                        onSearchOnlineLyrics?.invoke(t)
+                    } else {
+                        val currentText = parsedLyrics.lines.joinToString("\n") { it.text }
+                        onOpenTapToSync?.invoke(t, currentText.ifBlank { plainLyricsFallback })
+                    }
+                }
+                .show()
+        }
+        offsetSaveBtn.apply {
+            text = context.getString(R.string.lyric_offset_save)
+            setTextColor(0xFFFFFFFF.toInt())
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            background = offsetSaveGlass
+            minimumHeight = dp(32)
+            minWidth = dp(68)
+            maxLines = 1
+            ellipsize = null
+            gravity = Gravity.CENTER
+            setPadding(dp(12), dp(6), dp(12), dp(6))
+            SpringAnimatorHelper.attachPressFeedback(this)
+            setOnClickListener {
+                val t = audioEngine?.getCurrentTrack()
+                if (t != null) {
+                    onSaveLyricOffset?.invoke(t, userLyricOffsetMs)
+                    onSaveLyricSettings?.invoke(t, userLyricOffsetMs, lyricHighlightFraction)
+                }
+                onLyricHighlightChanged?.invoke(lyricHighlightFraction)
+                lyricTunerState.onSavePressed()
+                updateLyricTunerVisibility(animate = true)
+            }
+        }
+        val anchorSpacing = dp(5)
+        anchorRow.addView(anchorTopBtn, LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply { marginEnd = anchorSpacing })
+        anchorRow.addView(anchorOptimalBtn, LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply { marginEnd = anchorSpacing })
+        anchorRow.addView(anchorCenterBtn, LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply { marginEnd = anchorSpacing })
+        anchorRow.addView(tunerEditBtn, LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply { marginEnd = anchorSpacing })
+        anchorRow.addView(View(context), LinearLayout.LayoutParams(0, 0, 1f))
+        anchorRow.addView(offsetSaveBtn, LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT))
 
-        lyricTunerPanel.addView(lyricSourceBadgeTv)
-        lyricTunerPanel.addView(offsetRow)
+        lyricTunerPanel.addView(offsetRow, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
         lyricTunerPanel.addView(
             anchorRow,
-            LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply {
-                topMargin = dp(4)
-            }
-        )
-
-        val tunerActionRow = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        configureCompactPillBtn(tunerSearchBtn, context.getString(R.string.lyrics_replace_online)) {
-            val t = audioEngine?.getCurrentTrack() ?: return@configureCompactPillBtn
-            lyricTunerState.collapse()
-            updateLyricTunerVisibility(animate = true)
-            onSearchOnlineLyrics?.invoke(t)
-        }
-        configureCompactPillBtn(tunerResyncBtn, context.getString(R.string.lyrics_resync_offline)) {
-            val t = audioEngine?.getCurrentTrack() ?: return@configureCompactPillBtn
-            val currentText = parsedLyrics.lines.joinToString("\n") { it.text }
-            lyricTunerState.collapse()
-            updateLyricTunerVisibility(animate = true)
-            onOpenTapToSync?.invoke(t, currentText.ifBlank { plainLyricsFallback })
-        }
-        tunerActionRow.addView(tunerSearchBtn)
-        tunerActionRow.addView(tunerResyncBtn)
-        lyricTunerPanel.addView(
-            tunerActionRow,
-            LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply {
-                topMargin = dp(2)
+            LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply {
+                topMargin = dp(6)
             }
         )
 
@@ -1150,14 +1198,16 @@ class NowPlayingView(
         )
         bottomLyricOverlay.addView(
             lyricTunerPanel,
-            LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT)
+            LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT)
         )
 
         lyricsContainer.addView(lyricsRecycler, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         lyricsContainer.addView(lyricsEmptyContainer, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, Gravity.CENTER))
         lyricsContainer.addView(
             bottomLyricOverlay,
-            LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
+            LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
+                marginStart = dp(4)
+                marginEnd = dp(4)
                 bottomMargin = dp(6)
             }
         )
@@ -1238,8 +1288,14 @@ class NowPlayingView(
         }
 
         val syncVisibility = if (parsedLyrics.isSynced) View.VISIBLE else View.GONE
-        offsetRow.visibility = syncVisibility
-        anchorRow.visibility = syncVisibility
+        offsetMinusBtn.visibility = syncVisibility
+        offsetValueTv.visibility = syncVisibility
+        offsetPlusBtn.visibility = syncVisibility
+        offsetRow.visibility = if (parsedLyrics.isSynced || lyricSourceBadgeTv.visibility == View.VISIBLE) View.VISIBLE else View.GONE
+        anchorTopBtn.visibility = syncVisibility
+        anchorOptimalBtn.visibility = syncVisibility
+        anchorCenterBtn.visibility = syncVisibility
+        anchorRow.visibility = View.VISIBLE
 
         if (lyricTunerState.isExpanded) {
             if (animate) {
@@ -1743,10 +1799,15 @@ class NowPlayingView(
         if (mode == DisplayMode.LYRICS_FOCUS) {
             lyricTunerState.onEnterLyricsMode()
             updateLyricTunerVisibility(animate = false)
-            val active = lyricsAdapter.getActiveIndex()
-            if (active >= 0 && !manualScrollPaused) {
+            if (!manualScrollPaused && lyricsAdapter.getLines().isNotEmpty()) {
                 lyricsRecycler.post {
-                    lyricsAdapter.scrollToActiveLine(lyricsRecycler, active, animated = false)
+                    applyLyricsViewportPadding(lyricsRecycler.height)
+                    val active = lyricsAdapter.getActiveIndex()
+                    if (active >= 0) {
+                        lyricsAdapter.scrollToActiveLine(lyricsRecycler, active, animated = false)
+                    } else {
+                        lyricsAdapter.snapToInitialAnchor(lyricsRecycler)
+                    }
                 }
             }
         }
@@ -1896,7 +1957,12 @@ class NowPlayingView(
         modalCardGlass.setPalette(newPalette)
         modalCardGlass.setTintProfile(baseFraction = 0.85f, accentFraction = 0.15f)
         seekWaveformView.setPalette(newPalette)
-        lyricsAdapter.setAccentColor(newPalette.accentGlow)
+        lyricsAdapter.setPalette(newPalette)
+        tunerEditGlass.setPalette(newPalette)
+        tunerEditGlass.setTintProfile(baseFraction = 0.52f, accentFraction = 0.14f)
+        tunerEditBtn.setTextColor(0xE6FFFFFF.toInt())
+        offsetSaveGlass.setPalette(newPalette)
+        offsetSaveGlass.setTintProfile(baseFraction = 0.30f, accentFraction = 0.52f, preferAccentGlow = true)
         updateHighlightAnchorButtons()
         updateFavoriteButton(audioEngine?.getCurrentTrack())
         updateShuffleAndRepeatState()
@@ -2201,7 +2267,7 @@ class NowPlayingView(
     }
 
     private companion object {
-        const val AUTO_RESUME_DELAY_MS = 4_000L
+        const val AUTO_RESUME_DELAY_MS = 3_000L
         const val PREFS_NAME = "laguku_prefs"
         const val KEY_FAVORITES = "favorite_paths"
         const val CHANNEL_PLAY_DRAG = 21

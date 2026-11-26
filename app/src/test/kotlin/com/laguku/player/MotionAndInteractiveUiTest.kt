@@ -178,4 +178,45 @@ class MotionAndInteractiveUiTest {
     fun vinylDisc_runsAt15SecondsPerRevolution() {
         assertEquals(24f, VinylDiscVisualizerView.TARGET_DEG_PER_SEC, 0.0001f)
     }
+
+    @Test
+    fun lyricAnchorPaddingAndEmptyGuard_alignFirstLineAt36Percent() {
+        assertEquals(0 to 0, LyricsRecyclerAdapter.LyricWindowMath.computeAnchorPadding(0, 0.36f))
+        assertEquals(280 to 720, LyricsRecyclerAdapter.LyricWindowMath.computeAnchorPadding(1000, PlaybackStateStore.LYRIC_ANCHOR_TOP))
+        assertEquals(360 to 640, LyricsRecyclerAdapter.LyricWindowMath.computeAnchorPadding(1000, PlaybackStateStore.LYRIC_ANCHOR_OPTIMAL))
+        assertEquals(480 to 520, LyricsRecyclerAdapter.LyricWindowMath.computeAnchorPadding(1000, PlaybackStateStore.LYRIC_ANCHOR_CENTER))
+
+        assertEquals(-1, LyricsRecyclerAdapter.LyricWindowMath.resolveInitialAnchorIndex(0, -1))
+        assertEquals(-1, LyricsRecyclerAdapter.LyricWindowMath.resolveInitialAnchorIndex(0, 2))
+        assertEquals(0, LyricsRecyclerAdapter.LyricWindowMath.resolveInitialAnchorIndex(12, -1))
+        assertEquals(5, LyricsRecyclerAdapter.LyricWindowMath.resolveInitialAnchorIndex(12, 5))
+    }
+
+    @Test
+    fun subPixelScrollAccumulator_withFluidSpringConvergesToZeroResidualError() {
+        val solver = SpringAnimatorHelper.SpringSolver(
+            value = 0f,
+            target = 137.4f,
+            stiffness = SpringAnimatorHelper.SPRING_FLUID_SCROLL.stiffness,
+            dampingRatio = SpringAnimatorHelper.SPRING_FLUID_SCROLL.dampingRatio,
+            valueThreshold = 0.05f,
+            velocityThreshold = 0.5f
+        )
+        val accumulator = LyricsRecyclerAdapter.LyricMotionMath.SubPixelScrollAccumulator()
+        var lastVal = 0f
+        var scrolledPx = 0
+        var settled = false
+        var ticks = 0
+        while (!settled && ticks < 400) {
+            settled = solver.step(1f / 60f)
+            val floatDelta = solver.value - lastVal
+            lastVal = solver.value
+            scrolledPx += accumulator.accumulate(floatDelta)
+            ticks++
+        }
+        scrolledPx += accumulator.flushRemainder()
+        assertTrue(settled)
+        assertEquals(137, scrolledPx)
+        assertEquals(0f, accumulator.remainder, 0.0001f)
+    }
 }

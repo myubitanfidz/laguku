@@ -13,9 +13,11 @@ import android.widget.TextView
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.laguku.player.data.PlaybackStateStore
+import com.laguku.player.model.CoverPalette
 import com.laguku.player.model.LyricLine
 import com.laguku.player.model.ParsedLyrics
 import com.laguku.player.ui.glass.CoverPaletteExtractor
+import com.laguku.player.ui.glass.LiquidGlassDrawable
 import com.laguku.player.ui.motion.SpringAnimatorHelper
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -62,6 +64,22 @@ class LyricsRecyclerAdapter(
             return minOf(defaultFadePx, safeFade)
         }
 
+        fun computeAnchorPadding(
+            viewportHeight: Int,
+            anchorFraction: Float
+        ): Pair<Int, Int> {
+            if (viewportHeight <= 0) return 0 to 0
+            val clamped = anchorFraction.coerceIn(0.20f, 0.60f)
+            val padTop = (viewportHeight * clamped).roundToInt()
+            val padBottom = (viewportHeight * (1f - clamped)).roundToInt()
+            return padTop to padBottom
+        }
+
+        fun resolveInitialAnchorIndex(lineCount: Int, activeIndex: Int): Int {
+            if (lineCount <= 0) return -1
+            return if (activeIndex in 0 until lineCount) activeIndex else 0
+        }
+
         fun computeBlurTier(
             position: Int,
             activeIndex: Int,
@@ -81,10 +99,10 @@ class LyricsRecyclerAdapter(
         val BLUR_RADII = floatArrayOf(0f, 1.5f, 3f, 5f, 7f)
 
         fun computeFocusScale(focusProgress: Float): Float =
-            0.94f + 0.06f * focusProgress.coerceIn(0f, 1f)
+            0.95f + 0.05f * focusProgress.coerceIn(0f, 1f)
 
         fun computeFocusAlpha(focusProgress: Float): Float =
-            0.42f + 0.58f * focusProgress.coerceIn(0f, 1f)
+            0.40f + 0.60f * focusProgress.coerceIn(0f, 1f)
 
         fun selectBlurPoolIndex(
             focusProgress: Float,
@@ -98,6 +116,27 @@ class LyricsRecyclerAdapter(
                 (inv * 2f).roundToInt().coerceIn(0, 2)
             } else {
                 (inv * 4f).roundToInt().coerceIn(0, 4)
+            }
+        }
+
+        class SubPixelScrollAccumulator {
+            var remainder: Float = 0f
+
+            fun reset() {
+                remainder = 0f
+            }
+
+            fun accumulate(floatDelta: Float): Int {
+                val total = floatDelta + remainder
+                val intDelta = total.toInt()
+                remainder = total - intDelta
+                return intDelta
+            }
+
+            fun flushRemainder(): Int {
+                val delta = remainder.roundToInt()
+                remainder = 0f
+                return delta
             }
         }
 
@@ -121,19 +160,26 @@ class LyricsRecyclerAdapter(
     private var bottomSafeMarginPx: Int = 0
     private var defaultFadePx: Int = 0
 
+    private var currentPalette: CoverPalette = CoverPaletteExtractor.defaultPalette()
     private var accentTranslationFocusedColor: Int = computeSoftAccentColor(
-        CoverPaletteExtractor.defaultPalette().accentGlow,
+        currentPalette.accentGlow,
         focused = true
     )
     private var accentTranslationMutedColor: Int = computeSoftAccentColor(
-        CoverPaletteExtractor.defaultPalette().accentGlow,
+        currentPalette.accentGlow,
         focused = false
     )
 
-    private var appliedSpringScrollPx: Int = 0
+    private val subPixelAccumulator = LyricMotionMath.SubPixelScrollAccumulator()
+    private var lastSpringScrollValue: Float = 0f
 
     private val selectedIndices = LinkedHashSet<Int>()
     private var selectionMode: Boolean = false
+
+    fun setPalette(palette: CoverPalette) {
+        currentPalette = palette
+        setAccentColor(palette.accentGlow)
+    }
 
     fun setAccentColor(accentGlow: Int) {
         accentTranslationFocusedColor = computeSoftAccentColor(accentGlow, focused = true)
@@ -147,7 +193,8 @@ class LyricsRecyclerAdapter(
         lines = parsed.lines
         synced = parsed.isSynced
         activeIndex = -1
-        appliedSpringScrollPx = 0
+        subPixelAccumulator.reset()
+        lastSpringScrollValue = 0f
         selectedIndices.clear()
         selectionMode = false
         onSelectionChanged?.invoke(emptyList())
@@ -158,7 +205,8 @@ class LyricsRecyclerAdapter(
         lines = emptyList()
         synced = false
         activeIndex = -1
-        appliedSpringScrollPx = 0
+        subPixelAccumulator.reset()
+        lastSpringScrollValue = 0f
         selectedIndices.clear()
         selectionMode = false
         onSelectionChanged?.invoke(emptyList())
@@ -197,7 +245,18 @@ class LyricsRecyclerAdapter(
 
     fun cancelScrollAnimation(recyclerView: RecyclerView) {
         SpringAnimatorHelper.cancelSpring(recyclerView, CHANNEL_SCROLL)
-        appliedSpringScrollPx = 0
+        subPixelAccumulator.reset()
+        lastSpringScrollValue = 0f
+    }
+
+    fun snapToInitialAnchor(recyclerView: RecyclerView) {
+        cancelScrollAnimation(recyclerView)
+        if (lines.isEmpty() || recyclerView.height <= 0) return
+        val layoutManager = recyclerView.layoutManager as? LinearLayoutManager ?: return
+        val idx = LyricWindowMath.resolveInitialAnchorIndex(lines.size, activeIndex)
+        if (idx in lines.indices) {
+            layoutManager.scrollToPositionWithOffset(idx, 0)
+        }
     }
 
     fun setActiveIndex(
@@ -263,18 +322,20 @@ class LyricsRecyclerAdapter(
 
         if (!animated || SpringAnimatorHelper.isReducedMotionEnabled(recyclerView.context)) {
             cancelScrollAnimation(recyclerView)
-            layoutManager.scrollToPositionWithOffset(position, targetTopOffset)
+            layoutManager.scrollToPositionWithOffset(position, 0)
             return
         }
 
         if (activeView == null || viewportHeight <= 0) {
             cancelScrollAnimation(recyclerView)
-            layoutManager.scrollToPositionWithOffset(position, targetTopOffset)
+            if (viewportHeight > 0) {
+                layoutManager.scrollToPositionWithOffset(position, 0)
+            }
             return
         }
 
-        val remainingDy = activeView.top - targetTopOffset
-        if (abs(remainingDy) <= 1) {
+        val remainingDy = activeView.top - recyclerView.paddingTop
+        if (remainingDy == 0) {
             cancelScrollAnimation(recyclerView)
             return
         }
@@ -282,7 +343,8 @@ class LyricsRecyclerAdapter(
         val currentSpringVal = SpringAnimatorHelper.getSpringValue(recyclerView, CHANNEL_SCROLL)
         val startVal = currentSpringVal ?: 0f
         if (currentSpringVal == null) {
-            appliedSpringScrollPx = 0
+            subPixelAccumulator.reset()
+            lastSpringScrollValue = 0f
         }
         val targetVal = startVal + remainingDy.toFloat()
 
@@ -290,20 +352,25 @@ class LyricsRecyclerAdapter(
             key = recyclerView,
             start = startVal,
             target = targetVal,
-            stiffness = 220f,
-            dampingRatio = 0.92f,
-            valueThreshold = 0.5f,
+            stiffness = SpringAnimatorHelper.SPRING_FLUID_SCROLL.stiffness,
+            dampingRatio = SpringAnimatorHelper.SPRING_FLUID_SCROLL.dampingRatio,
+            valueThreshold = 0.05f,
             channel = CHANNEL_SCROLL,
             onUpdate = { v ->
-                val nextPx = v.roundToInt()
-                val delta = nextPx - appliedSpringScrollPx
-                if (delta != 0) {
-                    recyclerView.scrollBy(0, delta)
-                    appliedSpringScrollPx = nextPx
+                val floatDelta = v - lastSpringScrollValue
+                lastSpringScrollValue = v
+                val intDelta = subPixelAccumulator.accumulate(floatDelta)
+                if (intDelta != 0) {
+                    recyclerView.scrollBy(0, intDelta)
                 }
             },
             onEnd = {
-                appliedSpringScrollPx = 0
+                val rem = subPixelAccumulator.flushRemainder()
+                if (rem != 0) {
+                    recyclerView.scrollBy(0, rem)
+                }
+                subPixelAccumulator.reset()
+                lastSpringScrollValue = 0f
             }
         )
     }
@@ -458,7 +525,7 @@ class LyricsRecyclerAdapter(
             subColor = accentTranslationFocusedColor
             targetSizeSp = SIZE_INACTIVE_SP
             targetTypeface = TYPEFACE_MEDIUM
-            row.setBackgroundColor(0)
+            row.background = null
         } else if (position == activeIndex) {
             isFocused = true
             targetColor = COLOR_ACTIVE
@@ -466,7 +533,8 @@ class LyricsRecyclerAdapter(
             subColor = accentTranslationFocusedColor
             targetSizeSp = SIZE_ACTIVE_SP
             targetTypeface = TYPEFACE_BOLD
-            row.setBackgroundColor(0)
+            holder.activePillGlass.setPalette(currentPalette)
+            if (row.background !== holder.activePillGlass) row.background = holder.activePillGlass
         } else if (activeIndex >= 0 && position < activeIndex) {
             isFocused = false
             targetColor = COLOR_PAST
@@ -474,7 +542,8 @@ class LyricsRecyclerAdapter(
             subColor = accentTranslationMutedColor
             targetSizeSp = SIZE_INACTIVE_SP
             targetTypeface = TYPEFACE_MEDIUM
-            row.setBackgroundColor(0)
+            holder.activePillGlass.setPalette(currentPalette)
+            if (row.background !== holder.activePillGlass) row.background = holder.activePillGlass
         } else {
             isFocused = false
             targetColor = COLOR_UPCOMING
@@ -482,7 +551,8 @@ class LyricsRecyclerAdapter(
             subColor = accentTranslationMutedColor
             targetSizeSp = SIZE_INACTIVE_SP
             targetTypeface = TYPEFACE_MEDIUM
-            row.setBackgroundColor(0)
+            holder.activePillGlass.setPalette(currentPalette)
+            if (row.background !== holder.activePillGlass) row.background = holder.activePillGlass
         }
 
         if (tv.currentTextColor != targetColor) tv.setTextColor(targetColor)
@@ -518,6 +588,10 @@ class LyricsRecyclerAdapter(
         row.scaleY = scale
         row.alpha = LyricMotionMath.computeFocusAlpha(focusProgress)
 
+        if (!selectionMode && synced && row.background === holder.activePillGlass) {
+            holder.activePillGlass.alpha = (focusProgress.coerceIn(0f, 1f) * 200f).roundToInt().coerceIn(0, 200)
+        }
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             val dist = if (activeIndex >= 0) abs(position - activeIndex) else -1
             val blurIdx = LyricMotionMath.selectBlurPoolIndex(focusProgress, dist, synced, selectionMode)
@@ -534,6 +608,10 @@ class LyricsRecyclerAdapter(
         val romanizedText: TextView,
         val subText: TextView
     ) : RecyclerView.ViewHolder(rowView) {
+        val activePillGlass = LiquidGlassDrawable(rowView.context, 16f).apply {
+            setTintProfile(baseFraction = 0.16f, accentFraction = 0.24f, preferAccentGlow = true)
+            alpha = 0
+        }
         var appliedBlurIndex: Int = -1
         var focusProgress: Float = 0f
     }

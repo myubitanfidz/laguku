@@ -211,9 +211,9 @@ class Wave4FeaturesTest {
 
     @Test
     fun lyricMotionMath_interpolatesFocusScaleAlphaBlurPoolAndSpringScroll() {
-        assertEquals(0.94f, LyricsRecyclerAdapter.LyricMotionMath.computeFocusScale(0f), 0.0001f)
+        assertEquals(0.95f, LyricsRecyclerAdapter.LyricMotionMath.computeFocusScale(0f), 0.0001f)
         assertEquals(1.00f, LyricsRecyclerAdapter.LyricMotionMath.computeFocusScale(1f), 0.0001f)
-        assertEquals(0.42f, LyricsRecyclerAdapter.LyricMotionMath.computeFocusAlpha(0f), 0.0001f)
+        assertEquals(0.40f, LyricsRecyclerAdapter.LyricMotionMath.computeFocusAlpha(0f), 0.0001f)
         assertEquals(1.00f, LyricsRecyclerAdapter.LyricMotionMath.computeFocusAlpha(1f), 0.0001f)
 
         assertEquals(0, LyricsRecyclerAdapter.LyricMotionMath.selectBlurPoolIndex(0f, 0, synced = true, selectionMode = false))
