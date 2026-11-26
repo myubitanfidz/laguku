@@ -302,6 +302,11 @@ class InteractiveGlassScrubView(
         invalidate()
     }
 
+    fun setSampledBackdrop(ambientColor: Int, luminance: Float) {
+        containerGlass.setSampledBackdrop(ambientColor, luminance)
+        indicatorGlass.setSampledBackdrop(ambientColor, luminance)
+    }
+
     fun setAbLoopMarkers(pointAMs: Long?, pointBMs: Long?, durationMs: Long) {
         if (durationMs <= 0L || pointAMs == null) {
             abStartFraction = -1f

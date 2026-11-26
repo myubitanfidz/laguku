@@ -162,6 +162,73 @@ class LiquidGlassDrawable(
         }
     }
 
+    object TabBackdropSamplerMath {
+        const val MAX_SAMPLE_DIM_PX = 32
+        const val DEFAULT_SAMPLE_DIM_PX = 16
+        const val SMOOTHING_FACTOR = 0.24f
+
+        data class BackdropSample(val argb: Int, val luminance: Float)
+
+        fun clampSampleDimension(requestedPx: Int): Int = requestedPx.coerceIn(4, MAX_SAMPLE_DIM_PX)
+
+        fun computeAverageSample(
+            pixels: IntArray,
+            count: Int = pixels.size,
+            fallbackArgb: Int = LayerTokens.DARK_BASE_GROUND
+        ): BackdropSample {
+            val limit = minOf(count, pixels.size).coerceAtLeast(0)
+            var sumR = 0L
+            var sumG = 0L
+            var sumB = 0L
+            var totalWeight = 0L
+            for (i in 0 until limit) {
+                val px = pixels[i]
+                val a = (px ushr 24) and 0xFF
+                if (a < 16) continue
+                val r = (px ushr 16) and 0xFF
+                val g = (px ushr 8) and 0xFF
+                val b = px and 0xFF
+                sumR += r * a
+                sumG += g * a
+                sumB += b * a
+                totalWeight += a
+            }
+            if (totalWeight <= 0L) {
+                val r = (fallbackArgb ushr 16) and 0xFF
+                val g = (fallbackArgb ushr 8) and 0xFF
+                val b = fallbackArgb and 0xFF
+                val lum = ((0.2126f * r + 0.7152f * g + 0.0722f * b) / 255f).coerceIn(0f, 1f)
+                return BackdropSample((0xFF shl 24) or (fallbackArgb and 0x00FFFFFF), lum)
+            }
+            val avgR = (sumR / totalWeight).toInt().coerceIn(0, 255)
+            val avgG = (sumG / totalWeight).toInt().coerceIn(0, 255)
+            val avgB = (sumB / totalWeight).toInt().coerceIn(0, 255)
+            val lum = ((0.2126f * avgR + 0.7152f * avgG + 0.0722f * avgB) / 255f).coerceIn(0f, 1f)
+            return BackdropSample((0xFF shl 24) or (avgR shl 16) or (avgG shl 8) or avgB, lum)
+        }
+
+        fun interpolateSample(
+            currentArgb: Int,
+            currentLum: Float,
+            target: BackdropSample,
+            factor: Float = SMOOTHING_FACTOR
+        ): BackdropSample {
+            val t = factor.coerceIn(0.05f, 1f)
+            val inv = 1f - t
+            val cR = (currentArgb ushr 16) and 0xFF
+            val cG = (currentArgb ushr 8) and 0xFF
+            val cB = currentArgb and 0xFF
+            val tR = (target.argb ushr 16) and 0xFF
+            val tG = (target.argb ushr 8) and 0xFF
+            val tB = target.argb and 0xFF
+            val outR = (cR * inv + tR * t).roundToInt().coerceIn(0, 255)
+            val outG = (cG * inv + tG * t).roundToInt().coerceIn(0, 255)
+            val outB = (cB * inv + tB * t).roundToInt().coerceIn(0, 255)
+            val outLum = (currentLum.coerceIn(0f, 1f) * inv + target.luminance.coerceIn(0f, 1f) * t).coerceIn(0f, 1f)
+            return BackdropSample((0xFF shl 24) or (outR shl 16) or (outG shl 8) or outB, outLum)
+        }
+    }
+
     object BezelOpticsMath {
         const val MIN_BEZEL_DP = 8f
         const val MAX_BEZEL_DP = 20f
@@ -326,6 +393,7 @@ class LiquidGlassDrawable(
     private val defaultRimWidthPx: Float = rimWidthPx.coerceAtLeast(1f)
 
     private var backdropLuminance: Float = 0.18f
+    private var sampledAmbientColor: Int? = null
     private var contentDensity: Float = 0.35f
     private var materializationProgress: Float = 1f
     private var defaultLightMode: Boolean = false
@@ -466,6 +534,43 @@ class LiquidGlassDrawable(
         backdropLuminance = clamped
         applyPaletteColors()
         rebuildShaders(bounds)
+        invalidateSelf()
+    }
+
+    fun setSampledBackdrop(ambientColor: Int, luminance: Float) {
+        val clampedLum = luminance.coerceIn(0f, 1f)
+        val opaqueColor = (0xFF shl 24) or (ambientColor and 0x00FFFFFF)
+        if (sampledAmbientColor == opaqueColor && abs(backdropLuminance - clampedLum) < 0.008f) {
+            return
+        }
+        val prevLight = BezelOpticsMath.resolvePolarityIsLight(surfaceScale, backdropLuminance, defaultLightMode)
+        sampledAmbientColor = opaqueColor
+        backdropLuminance = clampedLum
+        val nextLight = BezelOpticsMath.resolvePolarityIsLight(surfaceScale, backdropLuminance, defaultLightMode)
+
+        applyPaletteColors()
+        if (prevLight != nextLight) {
+            rebuildShaders(bounds)
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            !bounds.isEmpty &&
+            LayerTokens.isRefractionAllowed(accessibilityFlags)
+        ) {
+            val w = bounds.width().toFloat()
+            val h = bounds.height().toFloat()
+            val maxR = minOf(w, h) * 0.5f
+            val r = cornerRadiusPx.coerceAtMost(maxR)
+            val bezelW = BezelOpticsMath.computeBezelWidthPx(w, h, r, density)
+            bezelLensingPaint.shader = agslBezelHelper?.updateAndGetShader(
+                width = w,
+                height = h,
+                cornerRadius = r,
+                bezelWidth = bezelW,
+                materialization = materializationProgress.coerceIn(0f, 1f),
+                dispersion = 0.04f,
+                accentColor = resolveEffectiveAgslTintColor(),
+                lightPolarity = if (nextLight) 1f else 0f
+            )
+        }
         invalidateSelf()
     }
 
@@ -741,25 +846,28 @@ class LiquidGlassDrawable(
             return
         }
 
+        val sampled = sampledAmbientColor
+        val effectiveBackdrop = if (sampled != null) blendRgb(palette.deepBackdrop, sampled, 0.22f) else palette.deepBackdrop
         val baseDarken = 1f - 0.55f * amoledProgress
         val polarityLiftedBase = if (isLightPolarity) 244f else 0f
         val bR = if (isLightPolarity) {
-            ((polarityLiftedBase * 0.65f + ((palette.deepBackdrop ushr 16) and 0xFF) * 0.35f) * baseDarken).roundToInt()
+            ((polarityLiftedBase * 0.65f + ((effectiveBackdrop ushr 16) and 0xFF) * 0.35f) * baseDarken).roundToInt()
         } else {
-            (((palette.deepBackdrop ushr 16) and 0xFF) * baseDarken).roundToInt()
+            (((effectiveBackdrop ushr 16) and 0xFF) * baseDarken).roundToInt()
         }
         val bG = if (isLightPolarity) {
-            ((polarityLiftedBase * 0.65f + ((palette.deepBackdrop ushr 8) and 0xFF) * 0.35f) * baseDarken).roundToInt()
+            ((polarityLiftedBase * 0.65f + ((effectiveBackdrop ushr 8) and 0xFF) * 0.35f) * baseDarken).roundToInt()
         } else {
-            (((palette.deepBackdrop ushr 8) and 0xFF) * baseDarken).roundToInt()
+            (((effectiveBackdrop ushr 8) and 0xFF) * baseDarken).roundToInt()
         }
         val bB = if (isLightPolarity) {
-            ((polarityLiftedBase * 0.65f + (palette.deepBackdrop and 0xFF) * 0.35f) * baseDarken).roundToInt()
+            ((polarityLiftedBase * 0.65f + (effectiveBackdrop and 0xFF) * 0.35f) * baseDarken).roundToInt()
         } else {
-            ((palette.deepBackdrop and 0xFF) * baseDarken).roundToInt()
+            ((effectiveBackdrop and 0xFF) * baseDarken).roundToInt()
         }
 
-        val tintSource = if (useAccentGlowAsTint) palette.accentGlow else palette.glassTint
+        val paletteTint = if (useAccentGlowAsTint) palette.accentGlow else palette.glassTint
+        val tintSource = if (sampled != null) blendRgb(paletteTint, sampled, 0.35f) else paletteTint
         val tR = (tintSource ushr 16) and 0xFF
         val tG = (tintSource ushr 8) and 0xFF
         val tB = tintSource and 0xFF
@@ -847,12 +955,26 @@ class LiquidGlassDrawable(
                 bezelWidth = bezelW,
                 materialization = mat,
                 dispersion = 0.04f,
-                accentColor = palette.accentGlow,
+                accentColor = resolveEffectiveAgslTintColor(),
                 lightPolarity = if (isLightPolarity) 1f else 0f
             )
         } else {
             bezelLensingPaint.shader = null
         }
+    }
+
+    private fun resolveEffectiveAgslTintColor(): Int {
+        val sampled = sampledAmbientColor ?: return palette.accentGlow
+        return blendRgb(palette.accentGlow, sampled, 0.42f)
+    }
+
+    private fun blendRgb(c1: Int, c2: Int, ratio: Float): Int {
+        val t = ratio.coerceIn(0f, 1f)
+        val inv = 1f - t
+        val r = (((c1 ushr 16) and 0xFF) * inv + ((c2 ushr 16) and 0xFF) * t).roundToInt().coerceIn(0, 255)
+        val g = (((c1 ushr 8) and 0xFF) * inv + ((c2 ushr 8) and 0xFF) * t).roundToInt().coerceIn(0, 255)
+        val b = ((c1 and 0xFF) * inv + (c2 and 0xFF) * t).roundToInt().coerceIn(0, 255)
+        return (0xFF shl 24) or (r shl 16) or (g shl 8) or b
     }
 
     @RequiresApi(Build.VERSION_CODES.TIRAMISU)

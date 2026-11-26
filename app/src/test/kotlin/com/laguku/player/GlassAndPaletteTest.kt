@@ -127,4 +127,51 @@ class GlassAndPaletteTest {
         assertTrue(movingSpec > touchSpec)
         assertTrue(dwellSpec in 0.99f..1f)
     }
+
+    @Test
+    fun tabBackdropSamplerMath_enforcesMax32PxBoundsExtractsChromaAndTriggersPolarity() {
+        val sampler = LiquidGlassDrawable.TabBackdropSamplerMath
+        assertEquals(32, sampler.MAX_SAMPLE_DIM_PX)
+        assertEquals(16, sampler.DEFAULT_SAMPLE_DIM_PX)
+        assertEquals(32, sampler.clampSampleDimension(64))
+        assertEquals(16, sampler.clampSampleDimension(16))
+
+        // Bright warm cover passing under the tab bar -> high luminance -> LIGHT polarity for SMALL glass
+        val warmBrightPixels = IntArray(sampler.DEFAULT_SAMPLE_DIM_PX * sampler.DEFAULT_SAMPLE_DIM_PX) {
+            0xFFF5D090.toInt()
+        }
+        val warmSample = sampler.computeAverageSample(warmBrightPixels)
+        assertTrue("Expected bright warm luminance > 0.58f, got ${warmSample.luminance}", warmSample.luminance > 0.58f)
+        assertEquals(0xFFF5D090.toInt(), warmSample.argb)
+        assertTrue(
+            LiquidGlassDrawable.BezelOpticsMath.resolvePolarityIsLight(
+                LiquidGlassDrawable.GlassSurfaceScale.SMALL,
+                warmSample.luminance,
+                defaultLightMode = false
+            )
+        )
+
+        // Deep cool cover -> low luminance -> DARK polarity
+        val coolDarkPixels = IntArray(sampler.DEFAULT_SAMPLE_DIM_PX * sampler.DEFAULT_SAMPLE_DIM_PX) {
+            0xFF14284A.toInt()
+        }
+        val coolSample = sampler.computeAverageSample(coolDarkPixels)
+        assertTrue("Expected dark cool luminance < 0.25f, got ${coolSample.luminance}", coolSample.luminance < 0.25f)
+        assertEquals(
+            false,
+            LiquidGlassDrawable.BezelOpticsMath.resolvePolarityIsLight(
+                LiquidGlassDrawable.GlassSurfaceScale.SMALL,
+                coolSample.luminance,
+                defaultLightMode = false
+            )
+        )
+
+        // Transparent/empty pixel buffer falls back gracefully
+        val fallback = sampler.computeAverageSample(IntArray(16) { 0x00FF0000 }, count = 16, fallbackArgb = 0xFF203040.toInt())
+        assertEquals(0xFF203040.toInt(), fallback.argb)
+
+        // Smoothing interpolates smoothly without snapping immediately
+        val smoothed = sampler.interpolateSample(coolSample.argb, coolSample.luminance, warmSample, factor = 0.25f)
+        assertTrue(smoothed.luminance > coolSample.luminance && smoothed.luminance < warmSample.luminance)
+    }
 }

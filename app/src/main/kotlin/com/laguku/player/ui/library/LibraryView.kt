@@ -8,7 +8,9 @@ import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Outline
 import android.graphics.Paint
+import android.graphics.RectF
 import android.graphics.Typeface
+import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
@@ -138,7 +140,8 @@ class LibraryView(
 
     private val listAdapter = LibraryAdapter(
         onEntryClick = { entry -> handleEntryClick(entry) },
-        onEntryLongClick = { entry -> handleEntryLongClick(entry) }
+        onEntryLongClick = { entry -> handleEntryLongClick(entry) },
+        onThumbDecoded = { scheduleBackdropSample() }
     )
 
     // Bottom Dock (Thumb-Zone)
@@ -185,6 +188,22 @@ class LibraryView(
     private val bottomDissolutionEdge = View(context)
     private val tabViews = ArrayList<TabItemView>(5)
     private var isNavBarCompact: Boolean = false
+
+    private val navSampleDim = LiquidGlassDrawable.TabBackdropSamplerMath.clampSampleDimension(
+        LiquidGlassDrawable.TabBackdropSamplerMath.DEFAULT_SAMPLE_DIM_PX
+    )
+    private val navSampleBitmap: Bitmap? = runCatching {
+        Bitmap.createBitmap(navSampleDim, navSampleDim, Bitmap.Config.ARGB_8888)
+    }.getOrNull()
+    private val navSampleCanvas: Canvas? = navSampleBitmap?.let { Canvas(it) }
+    private val navSamplePixels = IntArray(navSampleDim * navSampleDim)
+    private val navSampleDstRect = RectF()
+    private val navSamplePaint = Paint(Paint.FILTER_BITMAP_FLAG)
+    private val tmpNavLocation = IntArray(2)
+    private val tmpChildLocation = IntArray(2)
+    private var smoothedNavArgb: Int = LiquidGlassDrawable.LayerTokens.DARK_BASE_GROUND
+    private var smoothedNavLum: Float = 0.12f
+    private val sampleBackdropRunnable = Runnable { sampleBottomTabBackdrop() }
 
     init {
         buildUi()
@@ -374,6 +393,7 @@ class LibraryView(
                         setNavBarCompact(nextCompact)
                     }
                     updateListScrollDissolution()
+                    sampleBottomTabBackdrop()
                 }
             })
         }
@@ -1018,6 +1038,71 @@ class LibraryView(
             }
             emptyStateView.visibility = if (entries.isEmpty()) View.VISIBLE else View.GONE
         }
+        scheduleBackdropSample()
+    }
+
+    private fun scheduleBackdropSample() {
+        recyclerView.removeCallbacks(sampleBackdropRunnable)
+        recyclerView.post(sampleBackdropRunnable)
+    }
+
+    private fun sampleBottomTabBackdrop() {
+        val sampleBmp = navSampleBitmap ?: return
+        val sampleCanvas = navSampleCanvas ?: return
+        val barH = bottomScrubBar.height
+        if (bottomScrubBar.width <= 0 || barH <= 0 || recyclerView.childCount == 0) return
+
+        bottomScrubBar.getLocationInWindow(tmpNavLocation)
+        val barTopY = tmpNavLocation[1].toFloat()
+        val barBottomY = barTopY + barH.toFloat()
+
+        sampleBmp.eraseColor(LiquidGlassDrawable.LayerTokens.DARK_BASE_GROUND)
+        var drewAnyCover = false
+        val dimF = navSampleDim.toFloat()
+
+        for (i in 0 until recyclerView.childCount) {
+            val child = recyclerView.getChildAt(i)
+            val childH = child.height
+            if (childH <= 0) continue
+            child.getLocationInWindow(tmpChildLocation)
+            val childTopY = tmpChildLocation[1].toFloat()
+            val childBottomY = childTopY + childH.toFloat()
+            if (childBottomY <= barTopY || childTopY >= barBottomY) continue
+
+            val holder = recyclerView.getChildViewHolder(child) as? LibraryAdapter.EntryViewHolder ?: continue
+            val coverBmp = (holder.iconBadge.drawable as? BitmapDrawable)?.bitmap
+            if (coverBmp != null && !coverBmp.isRecycled) {
+                val overlapTop = ((childTopY - barTopY) / barH.toFloat()) * dimF
+                val overlapBottom = ((childBottomY - barTopY) / barH.toFloat()) * dimF
+                navSampleDstRect.set(0f, overlapTop, dimF, overlapBottom)
+                sampleCanvas.drawBitmap(coverBmp, null, navSampleDstRect, navSamplePaint)
+                drewAnyCover = true
+            }
+        }
+
+        val rawSample = if (drewAnyCover) {
+            sampleBmp.getPixels(navSamplePixels, 0, navSampleDim, 0, 0, navSampleDim, navSampleDim)
+            LiquidGlassDrawable.TabBackdropSamplerMath.computeAverageSample(
+                pixels = navSamplePixels,
+                count = navSamplePixels.size,
+                fallbackArgb = palette.deepBackdrop
+            )
+        } else {
+            LiquidGlassDrawable.TabBackdropSamplerMath.computeAverageSample(
+                pixels = navSamplePixels,
+                count = 0,
+                fallbackArgb = palette.deepBackdrop
+            )
+        }
+
+        val next = LiquidGlassDrawable.TabBackdropSamplerMath.interpolateSample(
+            currentArgb = smoothedNavArgb,
+            currentLum = smoothedNavLum,
+            target = rawSample
+        )
+        smoothedNavArgb = next.argb
+        smoothedNavLum = next.luminance
+        bottomScrubBar.setSampledBackdrop(next.argb, next.luminance)
     }
 
     private fun matchesQuery(track: Track, q: String): Boolean {
@@ -1160,7 +1245,8 @@ class LibraryView(
 
     private class LibraryAdapter(
         private val onEntryClick: (ListEntry) -> Unit,
-        private val onEntryLongClick: (ListEntry) -> Unit
+        private val onEntryLongClick: (ListEntry) -> Unit,
+        private val onThumbDecoded: (() -> Unit)? = null
     ) : RecyclerView.Adapter<LibraryAdapter.EntryViewHolder>() {
 
         private var entries: List<ListEntry> = emptyList()
@@ -1301,7 +1387,7 @@ class LibraryView(
                     holder.iconBadge.scaleType = ImageView.ScaleType.CENTER_CROP
                     holder.iconBadge.setPadding(0, 0, 0, 0)
                     holder.iconBadge.imageTintList = null
-                    TrackThumbnailLoader.bind(holder.iconBadge, t)
+                    TrackThumbnailLoader.bind(holder.iconBadge, t, onThumbDecoded)
                     holder.primary.text = t.title
                     holder.secondary.text = t.artist
                     holder.bindDuration(t.durationMs)
@@ -1320,12 +1406,17 @@ class LibraryView(
                     holder.bindCount(entry.node.tracks.size)
                 }
                 is ListEntry.AlbumEntry -> {
-                    holder.iconBadge.tag = null
                     if (holder.iconBadge.background != null) holder.iconBadge.background = null
                     holder.iconBadge.scaleType = ImageView.ScaleType.CENTER_CROP
                     holder.iconBadge.setPadding(0, 0, 0, 0)
-                    holder.iconBadge.setImageResource(R.drawable.ic_default_album_cover)
                     holder.iconBadge.imageTintList = null
+                    val repTrack = entry.group.tracks.firstOrNull()
+                    if (repTrack != null) {
+                        TrackThumbnailLoader.bind(holder.iconBadge, repTrack, onThumbDecoded)
+                    } else {
+                        holder.iconBadge.tag = null
+                        holder.iconBadge.setImageResource(R.drawable.ic_default_album_cover)
+                    }
                     holder.primary.text = entry.group.name
                     holder.secondary.text = entry.group.artist
                     holder.bindCount(entry.group.tracks.size)
@@ -1431,7 +1522,7 @@ class LibraryView(
             Thread(runnable, "LagukuTrackThumb").apply { isDaemon = true }
         }
 
-        fun bind(imageView: ImageView, track: Track) {
+        fun bind(imageView: ImageView, track: Track, onDecoded: (() -> Unit)? = null) {
             val key = track.contentUri.ifBlank { track.path }
             imageView.tag = key
             val cached = bitmapCache.get(key)?.takeIf { !it.isRecycled }
@@ -1447,7 +1538,10 @@ class LibraryView(
                 val again = bitmapCache.get(key)?.takeIf { !it.isRecycled }
                 if (again != null) {
                     mainHandler.post {
-                        if (imageView.tag == key) imageView.setImageBitmap(again)
+                        if (imageView.tag == key) {
+                            imageView.setImageBitmap(again)
+                            onDecoded?.invoke()
+                        }
                     }
                     return@execute
                 }
@@ -1461,6 +1555,7 @@ class LibraryView(
                 mainHandler.post {
                     if (imageView.tag == key) {
                         imageView.setImageBitmap(bmp)
+                        onDecoded?.invoke()
                     }
                 }
             }
