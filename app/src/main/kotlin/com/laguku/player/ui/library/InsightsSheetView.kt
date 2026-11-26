@@ -3,9 +3,11 @@ package com.laguku.player.ui.library
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.text.TextUtils
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.View
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -51,6 +53,14 @@ class InsightsSheetView(
         applyPalette(newPalette)
     }
 
+    fun setGlassTransparency(level: Float) {
+        sheetGlass.setContinuousTransparency(level)
+    }
+
+    fun setAccessibilityFlags(flags: LiquidGlassDrawable.AccessibilityFlags) {
+        sheetGlass.setAccessibilityFlags(flags)
+    }
+
     fun bindInsights(insights: ListeningInsights) {
         bodyContainer.removeAllViews()
 
@@ -61,8 +71,9 @@ class InsightsSheetView(
 
         val heroCard = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            background = LiquidGlassDrawable(context, 18f, palette).apply {
-                setTintProfile(0.45f, 0.35f, preferAccentGlow = true)
+            background = GradientDrawable().apply {
+                setColor((0x48 shl 24) or (palette.accentGlow and 0x00FFFFFF))
+                cornerRadius = 18f * density
             }
             setPadding(dp(16), dp(14), dp(16), dp(14))
         }
@@ -123,7 +134,10 @@ class InsightsSheetView(
     private fun addRankRow(primary: String, secondary: String) {
         val row = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            background = LiquidGlassDrawable(context, 14f, palette)
+            background = GradientDrawable().apply {
+                setColor(LiquidGlassDrawable.LayerTokens.nestedCardColor(isDarkMode = true))
+                cornerRadius = 14f * density
+            }
             setPadding(dp(12), dp(8), dp(12), dp(8))
         }
         row.addView(TextView(context).apply {
@@ -150,9 +164,15 @@ class InsightsSheetView(
         sheetCard.apply {
             orientation = LinearLayout.VERTICAL
             background = sheetGlass
-            setPadding(dp(18), dp(18), dp(18), dp(18))
+            setPadding(dp(18), dp(10), dp(18), dp(18))
             elevation = 20f * density
             isClickable = true
+        }
+        val grabberHandle = View(context).apply {
+            background = GradientDrawable().apply {
+                setColor(0x55FFFFFF)
+                cornerRadius = 2f * density
+            }
         }
         val headerRow = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -170,7 +190,10 @@ class InsightsSheetView(
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
             minimumHeight = dp(48)
             gravity = Gravity.CENTER
-            background = LiquidGlassDrawable(context, 14f, palette)
+            background = GradientDrawable().apply {
+                setColor(0x24FFFFFF)
+                cornerRadius = 14f * density
+            }
             setPadding(dp(14), dp(8), dp(14), dp(8))
             SpringAnimatorHelper.attachPressFeedback(this)
             setOnClickListener { onDismiss() }
@@ -183,13 +206,20 @@ class InsightsSheetView(
             addView(bodyContainer, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
         }
         val maxH = (resources.displayMetrics.heightPixels * 0.50f).toInt()
+        sheetCard.addView(grabberHandle, LinearLayout.LayoutParams(dp(36), dp(4)).apply {
+            gravity = Gravity.CENTER_HORIZONTAL
+            bottomMargin = dp(10)
+        })
         sheetCard.addView(headerRow, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(10) })
         sheetCard.addView(scroll, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, maxH))
+        SpringAnimatorHelper.attachSwipeToDismiss(grabberHandle, sheetCard, onDismiss = onDismiss)
+        SpringAnimatorHelper.attachSwipeToDismiss(headerRow, sheetCard, onDismiss = onDismiss)
         addView(sheetCard, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
     }
 
     private fun applyPalette(newPalette: CoverPalette) {
         sheetGlass.setPalette(newPalette)
+        sheetGlass.setSurfaceScale(LiquidGlassDrawable.GlassSurfaceScale.LARGE)
         sheetGlass.setTintProfile(baseFraction = 0.88f, accentFraction = 0.14f)
     }
 

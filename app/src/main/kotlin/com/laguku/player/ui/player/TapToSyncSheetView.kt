@@ -3,6 +3,7 @@ package com.laguku.player.ui.player
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.text.TextUtils
 import android.util.TypedValue
 import android.view.Gravity
@@ -98,9 +99,14 @@ class TapToSyncSheetView(
     private val trackHeaderTv = TextView(context)
     private val pasteContainer = LinearLayout(context)
     private val rawLyricsEdit = EditText(context)
-    private val rawLyricsGlass = LiquidGlassDrawable(context, 16f)
+    private val rawLyricsBg = GradientDrawable().apply {
+        setColor(LiquidGlassDrawable.LayerTokens.nestedCardColor(isDarkMode = true))
+        cornerRadius = 16f * resources.displayMetrics.density
+    }
     private val startSyncBtn = TextView(context)
-    private val startSyncGlass = LiquidGlassDrawable(context, 16f)
+    private val startSyncBg = GradientDrawable().apply {
+        cornerRadius = 16f * resources.displayMetrics.density
+    }
 
     private val syncContainer = LinearLayout(context)
     private val progressTv = TextView(context)
@@ -108,12 +114,16 @@ class TapToSyncSheetView(
     private val activePreviewTv = TextView(context)
     private val nextPreviewTv = TextView(context)
     private val tapStampBtn = TextView(context)
-    private val tapStampGlass = LiquidGlassDrawable(context, 20f)
+    private val tapStampBg = GradientDrawable().apply {
+        cornerRadius = 20f * resources.displayMetrics.density
+    }
     private val undoBtn = TextView(context)
     private val playPauseBtn = TextView(context)
     private val editRawBtn = TextView(context)
     private val saveLrcBtn = TextView(context)
-    private val saveLrcGlass = LiquidGlassDrawable(context, 16f)
+    private val saveLrcBg = GradientDrawable().apply {
+        cornerRadius = 16f * resources.displayMetrics.density
+    }
 
     init {
         setBackgroundColor(0x9904060A.toInt())
@@ -132,6 +142,14 @@ class TapToSyncSheetView(
         applyPalette(newPalette)
     }
 
+    fun setGlassTransparency(level: Float) {
+        sheetGlass.setContinuousTransparency(level)
+    }
+
+    fun setAccessibilityFlags(flags: LiquidGlassDrawable.AccessibilityFlags) {
+        sheetGlass.setAccessibilityFlags(flags)
+    }
+
     fun bindTrack(track: Track, engine: AudioEngine?, prefillLyrics: String? = null) {
         currentTrack = track
         audioEngine = engine
@@ -144,9 +162,15 @@ class TapToSyncSheetView(
         sheetCard.apply {
             orientation = LinearLayout.VERTICAL
             background = sheetGlass
-            setPadding(dp(16), dp(16), dp(16), dp(18))
+            setPadding(dp(16), dp(10), dp(16), dp(18))
             elevation = 20f * density
             isClickable = true
+        }
+        val grabberHandle = View(context).apply {
+            background = GradientDrawable().apply {
+                setColor(0x55FFFFFF)
+                cornerRadius = 2f * density
+            }
         }
 
         val headerRow = LinearLayout(context).apply {
@@ -178,7 +202,7 @@ class TapToSyncSheetView(
             setHintTextColor(0x70FFFFFF)
             setTextColor(0xFFFFFFFF.toInt())
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f)
-            background = rawLyricsGlass
+            background = rawLyricsBg
             gravity = Gravity.TOP or Gravity.START
             minLines = 6
             maxLines = 9
@@ -191,7 +215,7 @@ class TapToSyncSheetView(
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             gravity = Gravity.CENTER
             minimumHeight = dp(50)
-            background = startSyncGlass
+            background = startSyncBg
             SpringAnimatorHelper.attachPressFeedback(this)
             setOnClickListener {
                 session.loadRawLyrics(rawLyricsEdit.text?.toString().orEmpty())
@@ -250,7 +274,7 @@ class TapToSyncSheetView(
             typeface = Typeface.create("sans-serif", Typeface.BOLD)
             gravity = Gravity.CENTER
             minimumHeight = dp(58)
-            background = tapStampGlass
+            background = tapStampBg
             SpringAnimatorHelper.attachPressFeedback(this)
             setOnClickListener { view ->
                 val posMs = audioEngine?.getCurrentPositionMs() ?: 0L
@@ -294,7 +318,7 @@ class TapToSyncSheetView(
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             gravity = Gravity.CENTER
             minimumHeight = dp(48)
-            background = saveLrcGlass
+            background = saveLrcBg
             SpringAnimatorHelper.attachPressFeedback(this)
             setOnClickListener {
                 val track = currentTrack ?: return@setOnClickListener
@@ -322,11 +346,17 @@ class TapToSyncSheetView(
             LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, dp(48))
         )
 
+        sheetCard.addView(grabberHandle, LinearLayout.LayoutParams(dp(36), dp(4)).apply {
+            gravity = Gravity.CENTER_HORIZONTAL
+            bottomMargin = dp(10)
+        })
         sheetCard.addView(headerRow, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
         sheetCard.addView(trackHeaderTv, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
         sheetCard.addView(pasteContainer, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
         sheetCard.addView(syncContainer, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
 
+        SpringAnimatorHelper.attachSwipeToDismiss(grabberHandle, sheetCard, onDismiss = onDismiss)
+        SpringAnimatorHelper.attachSwipeToDismiss(headerRow, sheetCard, onDismiss = onDismiss)
         addView(sheetCard, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
     }
 
@@ -338,7 +368,10 @@ class TapToSyncSheetView(
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             gravity = Gravity.CENTER
             minimumHeight = dp(46)
-            background = LiquidGlassDrawable(context, 14f, palette)
+            background = GradientDrawable().apply {
+                setColor(0x1EFFFFFF)
+                cornerRadius = 14f * density
+            }
             SpringAnimatorHelper.attachPressFeedback(this)
             setOnClickListener { onClick() }
         }
@@ -352,7 +385,10 @@ class TapToSyncSheetView(
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             minimumHeight = dp(44)
             gravity = Gravity.CENTER
-            background = LiquidGlassDrawable(context, 14f, palette)
+            background = GradientDrawable().apply {
+                setColor(0x24FFFFFF)
+                cornerRadius = 14f * density
+            }
             setPadding(dp(14), dp(8), dp(14), dp(8))
             SpringAnimatorHelper.attachPressFeedback(this)
             setOnClickListener { onClick() }
@@ -409,17 +445,12 @@ class TapToSyncSheetView(
 
     private fun applyPalette(newPalette: CoverPalette) {
         sheetGlass.setPalette(newPalette)
+        sheetGlass.setSurfaceScale(LiquidGlassDrawable.GlassSurfaceScale.LARGE)
         sheetGlass.setTintProfile(baseFraction = 0.88f, accentFraction = 0.14f)
-        rawLyricsGlass.setPalette(newPalette)
-        startSyncGlass.setPalette(newPalette)
-        startSyncGlass.setTintProfile(baseFraction = 0.34f, accentFraction = 0.50f, preferAccentGlow = true)
-        tapStampGlass.setPalette(newPalette)
-        tapStampGlass.setTintProfile(baseFraction = 0.28f, accentFraction = 0.58f, preferAccentGlow = true)
-        saveLrcGlass.setPalette(newPalette)
-        saveLrcGlass.setTintProfile(baseFraction = 0.34f, accentFraction = 0.50f, preferAccentGlow = true)
-        (playPauseBtn.background as? LiquidGlassDrawable)?.setPalette(newPalette)
-        (undoBtn.background as? LiquidGlassDrawable)?.setPalette(newPalette)
-        (editRawBtn.background as? LiquidGlassDrawable)?.setPalette(newPalette)
+        val accentTint = (0x66 shl 24) or (newPalette.accentGlow and 0x00FFFFFF)
+        startSyncBg.setColor(accentTint)
+        tapStampBg.setColor(accentTint)
+        saveLrcBg.setColor(accentTint)
     }
 
     private fun dp(value: Int): Int = (value * density).toInt()

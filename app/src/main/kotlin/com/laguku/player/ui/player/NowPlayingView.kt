@@ -1292,7 +1292,7 @@ class NowPlayingView(
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             background = offsetSaveBg
-            minimumHeight = dp(32)
+            minimumHeight = dp(44)
             minWidth = dp(68)
             maxLines = 1
             ellipsize = null
@@ -1410,7 +1410,8 @@ class NowPlayingView(
             setTextColor(0xFFFFFFFF.toInt())
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            minimumHeight = dp(36)
+            minimumWidth = dp(44)
+            minimumHeight = dp(44)
             gravity = Gravity.CENTER
             setPadding(dp(8), dp(4), dp(8), dp(4))
             SpringAnimatorHelper.attachPressFeedback(this)
@@ -1429,7 +1430,8 @@ class NowPlayingView(
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             background = bg
-            minimumHeight = dp(32)
+            minimumWidth = dp(44)
+            minimumHeight = dp(44)
             gravity = Gravity.CENTER
             setPadding(dp(10), dp(4), dp(10), dp(4))
             SpringAnimatorHelper.attachPressFeedback(this)
@@ -2511,8 +2513,8 @@ class NowPlayingView(
                 setTextColor(0xCCFFFFFF.toInt())
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
                 gravity = Gravity.CENTER
-                minimumWidth = dp(34)
-                minimumHeight = dp(36)
+                minimumWidth = dp(44)
+                minimumHeight = dp(44)
                 setPadding(dp(4), dp(4), dp(4), dp(4))
             }
             val upBtn = makeMiniBtn("\u2191")

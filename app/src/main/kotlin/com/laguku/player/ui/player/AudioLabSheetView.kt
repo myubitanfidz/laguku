@@ -7,6 +7,7 @@ import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.text.TextUtils
 import android.util.TypedValue
 import android.view.Gravity
@@ -97,6 +98,14 @@ class AudioLabSheetView(
         applyPalette(newPalette)
     }
 
+    fun setGlassTransparency(level: Float) {
+        sheetGlass.setContinuousTransparency(level)
+    }
+
+    fun setAccessibilityFlags(flags: LiquidGlassDrawable.AccessibilityFlags) {
+        sheetGlass.setAccessibilityFlags(flags)
+    }
+
     fun bindState(
         engine: AudioEngine?,
         route: ActiveOutputRoute?,
@@ -116,9 +125,15 @@ class AudioLabSheetView(
         sheetCard.apply {
             orientation = LinearLayout.VERTICAL
             background = sheetGlass
-            setPadding(dp(16), dp(16), dp(16), dp(20))
+            setPadding(dp(16), dp(10), dp(16), dp(20))
             elevation = 20f * density
             isClickable = true
+        }
+        val grabberHandle = View(context).apply {
+            background = GradientDrawable().apply {
+                setColor(0x55FFFFFF)
+                cornerRadius = 2f * density
+            }
         }
 
         val headerRow = LinearLayout(context).apply {
@@ -138,7 +153,10 @@ class AudioLabSheetView(
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             minimumHeight = dp(48)
             gravity = Gravity.CENTER
-            background = LiquidGlassDrawable(context, 14f, palette)
+            background = GradientDrawable().apply {
+                setColor(0x24FFFFFF)
+                cornerRadius = 14f * density
+            }
             setPadding(dp(14), dp(8), dp(14), dp(8))
             SpringAnimatorHelper.attachPressFeedback(this)
             setOnClickListener { onDismiss() }
@@ -188,6 +206,10 @@ class AudioLabSheetView(
         bodyContainer.orientation = LinearLayout.VERTICAL
         scrollView.addView(bodyContainer, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
 
+        sheetCard.addView(grabberHandle, LinearLayout.LayoutParams(dp(36), dp(4)).apply {
+            gravity = Gravity.CENTER_HORIZONTAL
+            bottomMargin = dp(10)
+        })
         sheetCard.addView(headerRow, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
         sheetCard.addView(routeBanner, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
         sheetCard.addView(tabRow, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(10) })
@@ -195,20 +217,22 @@ class AudioLabSheetView(
         val maxBodyH = (resources.displayMetrics.heightPixels * 0.48f).toInt()
         sheetCard.addView(scrollView, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, maxBodyH))
 
+        SpringAnimatorHelper.attachSwipeToDismiss(grabberHandle, sheetCard, onDismiss = onDismiss)
+        SpringAnimatorHelper.attachSwipeToDismiss(headerRow, sheetCard, onDismiss = onDismiss)
         addView(sheetCard, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
         updateTabVisuals()
     }
 
     private fun updateTabVisuals() {
+        val activeColor = (0x66 shl 24) or (palette.accentGlow and 0x00FFFFFF)
+        val inactiveColor = 0x1EFFFFFF
         for ((tab, tv) in tabViews) {
             val sel = tab == activeTab
-            val glass = LiquidGlassDrawable(context, 16f, palette)
-            glass.setTintProfile(
-                baseFraction = if (sel) 0.35f else 0.56f,
-                accentFraction = if (sel) 0.50f else 0.14f,
-                preferAccentGlow = sel
-            )
-            tv.background = glass
+            val bg = (tv.background as? GradientDrawable) ?: GradientDrawable().also {
+                it.cornerRadius = 16f * density
+                tv.background = it
+            }
+            bg.setColor(if (sel) activeColor else inactiveColor)
             tv.setTextColor(if (sel) 0xFFFFFFFF.toInt() else 0xA3FFFFFF.toInt())
         }
     }
@@ -243,9 +267,12 @@ class AudioLabSheetView(
                 setTextColor(0xFFFFFFFF.toInt())
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
                 typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-                minimumHeight = dp(40)
+                minimumHeight = dp(44)
                 gravity = Gravity.CENTER
-                background = LiquidGlassDrawable(context, 14f, palette)
+                background = GradientDrawable().apply {
+                    setColor(0x1EFFFFFF)
+                    cornerRadius = 14f * density
+                }
                 setPadding(dp(12), dp(6), dp(12), dp(6))
                 SpringAnimatorHelper.attachPressFeedback(this)
                 setOnClickListener {
@@ -565,7 +592,10 @@ class AudioLabSheetView(
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             gravity = Gravity.CENTER
             minimumHeight = dp(48)
-            background = LiquidGlassDrawable(context, 16f, palette)
+            background = GradientDrawable().apply {
+                setColor(0x1EFFFFFF)
+                cornerRadius = 16f * density
+            }
             setPadding(dp(12), dp(8), dp(12), dp(8))
             SpringAnimatorHelper.attachPressFeedback(this)
             setOnClickListener { onClick() }
@@ -592,6 +622,7 @@ class AudioLabSheetView(
 
     private fun applyPalette(newPalette: CoverPalette) {
         sheetGlass.setPalette(newPalette)
+        sheetGlass.setSurfaceScale(LiquidGlassDrawable.GlassSurfaceScale.LARGE)
         sheetGlass.setTintProfile(baseFraction = 0.88f, accentFraction = 0.14f)
         for (slider in eqBandSliders) {
             slider.setAccentColor(newPalette.accentGlow)

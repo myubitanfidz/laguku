@@ -717,6 +717,12 @@ class MainActivity : Activity(), AudioEngine.Listener, LibraryView.Callbacks, Pl
         nowPlayingView.setAccessibilityFlags(currentAccessibilityFlags)
         utilitiesSheet.setGlassTransparency(currentTransparencyLevel)
         utilitiesSheet.setAccessibilityFlags(currentAccessibilityFlags)
+        audioLabSheet.setGlassTransparency(currentTransparencyLevel)
+        audioLabSheet.setAccessibilityFlags(currentAccessibilityFlags)
+        insightsSheet.setGlassTransparency(currentTransparencyLevel)
+        insightsSheet.setAccessibilityFlags(currentAccessibilityFlags)
+        tapToSyncSheet.setGlassTransparency(currentTransparencyLevel)
+        tapToSyncSheet.setAccessibilityFlags(currentAccessibilityFlags)
     }
 
     private fun openAudioLabSheet() {
