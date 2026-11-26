@@ -251,11 +251,14 @@ class Wave4FeaturesTest {
     }
 
     @Test
-    fun lyricMotionMath_interpolatesFocusScaleAlphaBlurPoolAndSpringScroll() {
+    fun lyricMotionMath_interpolatesFocusScaleAlphaColorBlurPoolAndSpringScroll() {
         assertEquals(0.95f, LyricsRecyclerAdapter.LyricMotionMath.computeFocusScale(0f), 0.0001f)
         assertEquals(1.00f, LyricsRecyclerAdapter.LyricMotionMath.computeFocusScale(1f), 0.0001f)
-        assertEquals(0.40f, LyricsRecyclerAdapter.LyricMotionMath.computeFocusAlpha(0f), 0.0001f)
+        assertEquals(0.38f, LyricsRecyclerAdapter.LyricMotionMath.computeFocusAlpha(0f), 0.0001f)
         assertEquals(1.00f, LyricsRecyclerAdapter.LyricMotionMath.computeFocusAlpha(1f), 0.0001f)
+        assertEquals(0x99FFFFFF.toInt(), LyricsRecyclerAdapter.LyricMotionMath.interpolateColor(0x99FFFFFF.toInt(), 0xFFFFFFFF.toInt(), 0f))
+        assertEquals(0xFFFFFFFF.toInt(), LyricsRecyclerAdapter.LyricMotionMath.interpolateColor(0x99FFFFFF.toInt(), 0xFFFFFFFF.toInt(), 1f))
+        assertFalse(LyricsRecyclerAdapter.LyricMotionMath.HAS_ITEM_BACKGROUND)
 
         assertEquals(0, LyricsRecyclerAdapter.LyricMotionMath.selectBlurPoolIndex(0f, 0, synced = true, selectionMode = false))
         assertEquals(2, LyricsRecyclerAdapter.LyricMotionMath.selectBlurPoolIndex(0f, 1, synced = true, selectionMode = false))
@@ -265,14 +268,15 @@ class Wave4FeaturesTest {
         val solver = SpringAnimatorHelper.SpringSolver(
             value = 0f,
             target = 120f,
-            stiffness = 220f,
-            dampingRatio = 0.92f,
-            valueThreshold = 0.5f
+            stiffness = LyricsRecyclerAdapter.LyricMotionMath.LYRIC_SCROLL_STIFFNESS,
+            dampingRatio = LyricsRecyclerAdapter.LyricMotionMath.LYRIC_SCROLL_DAMPING_RATIO,
+            valueThreshold = 0.05f,
+            velocityThreshold = 0.5f
         )
         var applied = 0f
         var settled = false
         var ticks = 0
-        while (!settled && ticks < 300) {
+        while (!settled && ticks < 500) {
             val (delta, done) = LyricsRecyclerAdapter.LyricMotionMath.computeScrollStep(solver, applied, 1f / 60f)
             applied += delta
             settled = done

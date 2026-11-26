@@ -17,7 +17,6 @@ import com.laguku.player.model.CoverPalette
 import com.laguku.player.model.LyricLine
 import com.laguku.player.model.ParsedLyrics
 import com.laguku.player.ui.glass.CoverPaletteExtractor
-import com.laguku.player.ui.glass.LiquidGlassDrawable
 import com.laguku.player.ui.motion.SpringAnimatorHelper
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -96,13 +95,40 @@ class LyricsRecyclerAdapter(
     }
 
     object LyricMotionMath {
+        const val LYRIC_SCROLL_STIFFNESS = 130f
+        const val LYRIC_SCROLL_DAMPING_RATIO = 0.96f
+        const val FOCUS_SCALE_MIN = 0.95f
+        const val FOCUS_SCALE_MAX = 1.00f
+        const val FOCUS_ALPHA_MIN = 0.38f
+        const val FOCUS_ALPHA_MAX = 1.00f
+        const val HAS_ITEM_BACKGROUND = false
+
         val BLUR_RADII = floatArrayOf(0f, 1.5f, 3f, 5f, 7f)
 
         fun computeFocusScale(focusProgress: Float): Float =
-            0.95f + 0.05f * focusProgress.coerceIn(0f, 1f)
+            FOCUS_SCALE_MIN + (FOCUS_SCALE_MAX - FOCUS_SCALE_MIN) * focusProgress.coerceIn(0f, 1f)
 
         fun computeFocusAlpha(focusProgress: Float): Float =
-            0.40f + 0.60f * focusProgress.coerceIn(0f, 1f)
+            FOCUS_ALPHA_MIN + (FOCUS_ALPHA_MAX - FOCUS_ALPHA_MIN) * focusProgress.coerceIn(0f, 1f)
+
+        fun interpolateColor(fromColor: Int, toColor: Int, fraction: Float): Int {
+            val t = fraction.coerceIn(0f, 1f)
+            val fA = (fromColor ushr 24) and 0xFF
+            val fR = (fromColor ushr 16) and 0xFF
+            val fG = (fromColor ushr 8) and 0xFF
+            val fB = fromColor and 0xFF
+
+            val tA = (toColor ushr 24) and 0xFF
+            val tR = (toColor ushr 16) and 0xFF
+            val tG = (toColor ushr 8) and 0xFF
+            val tB = toColor and 0xFF
+
+            val a = (fA + (tA - fA) * t).roundToInt().coerceIn(0, 255)
+            val r = (fR + (tR - fR) * t).roundToInt().coerceIn(0, 255)
+            val g = (fG + (tG - fG) * t).roundToInt().coerceIn(0, 255)
+            val b = (fB + (tB - fB) * t).roundToInt().coerceIn(0, 255)
+            return (a shl 24) or (r shl 16) or (g shl 8) or b
+        }
 
         fun selectBlurPoolIndex(
             focusProgress: Float,
@@ -120,22 +146,28 @@ class LyricsRecyclerAdapter(
         }
 
         class SubPixelScrollAccumulator {
-            var remainder: Float = 0f
+            var subPixelRemainder: Float = 0f
+
+            var remainder: Float
+                get() = subPixelRemainder
+                set(value) {
+                    subPixelRemainder = value
+                }
 
             fun reset() {
-                remainder = 0f
+                subPixelRemainder = 0f
             }
 
             fun accumulate(floatDelta: Float): Int {
-                val total = floatDelta + remainder
+                val total = floatDelta + subPixelRemainder
                 val intDelta = total.toInt()
-                remainder = total - intDelta
+                subPixelRemainder = total - intDelta
                 return intDelta
             }
 
             fun flushRemainder(): Int {
-                val delta = remainder.roundToInt()
-                remainder = 0f
+                val delta = subPixelRemainder.roundToInt()
+                subPixelRemainder = 0f
                 return delta
             }
         }
@@ -160,13 +192,12 @@ class LyricsRecyclerAdapter(
     private var bottomSafeMarginPx: Int = 0
     private var defaultFadePx: Int = 0
 
-    private var currentPalette: CoverPalette = CoverPaletteExtractor.defaultPalette()
     private var accentTranslationFocusedColor: Int = computeSoftAccentColor(
-        currentPalette.accentGlow,
+        CoverPaletteExtractor.defaultPalette().accentGlow,
         focused = true
     )
     private var accentTranslationMutedColor: Int = computeSoftAccentColor(
-        currentPalette.accentGlow,
+        CoverPaletteExtractor.defaultPalette().accentGlow,
         focused = false
     )
 
@@ -177,7 +208,6 @@ class LyricsRecyclerAdapter(
     private var selectionMode: Boolean = false
 
     fun setPalette(palette: CoverPalette) {
-        currentPalette = palette
         setAccentColor(palette.accentGlow)
     }
 
@@ -268,27 +298,25 @@ class LyricsRecyclerAdapter(
         val clamped = if (newIndex in lines.indices) newIndex else -1
         if (clamped == activeIndex) return
 
-        val oldIndex = activeIndex
         activeIndex = clamped
 
-        val minIdx = when {
-            oldIndex in lines.indices && clamped in lines.indices -> minOf(oldIndex, clamped)
-            oldIndex in lines.indices -> oldIndex
-            else -> clamped
-        }
-        val maxIdx = when {
-            oldIndex in lines.indices && clamped in lines.indices -> maxOf(oldIndex, clamped)
-            oldIndex in lines.indices -> oldIndex
-            else -> clamped
-        }
-        val rangeStart = (minIdx - 2).coerceAtLeast(0)
-        val rangeEnd = (maxIdx + 2).coerceAtMost(lines.lastIndex)
-        if (rangeStart <= rangeEnd) {
-            notifyItemRangeChanged(rangeStart, rangeEnd - rangeStart + 1, PAYLOAD_STATE)
+        if (recyclerView != null) {
+            updateVisibleHoldersInPlace(recyclerView, animateFocus = true)
         }
 
         if (autoScroll && clamped in lines.indices && recyclerView != null) {
             scrollToActiveLine(recyclerView, clamped, animated = true)
+        }
+    }
+
+    private fun updateVisibleHoldersInPlace(recyclerView: RecyclerView, animateFocus: Boolean) {
+        for (i in 0 until recyclerView.childCount) {
+            val child = recyclerView.getChildAt(i)
+            val holder = recyclerView.getChildViewHolder(child) as? LyricViewHolder ?: continue
+            val pos = holder.bindingAdapterPosition
+            if (pos in lines.indices) {
+                bindVisualState(holder, pos, animateFocus = animateFocus)
+            }
         }
     }
 
@@ -311,14 +339,6 @@ class LyricsRecyclerAdapter(
             )
             recyclerView.setFadingEdgeLength(adaptiveFade)
         }
-
-        val targetTopOffset = LyricWindowMath.computeScrollTopOffset(
-            viewportHeight = viewportHeight,
-            itemHeight = itemHeight,
-            anchorFraction = highlightFraction,
-            topSafeMargin = topSafeMarginPx,
-            bottomSafeMargin = bottomSafeMarginPx
-        )
 
         if (!animated || SpringAnimatorHelper.isReducedMotionEnabled(recyclerView.context)) {
             cancelScrollAnimation(recyclerView)
@@ -352,8 +372,8 @@ class LyricsRecyclerAdapter(
             key = recyclerView,
             start = startVal,
             target = targetVal,
-            stiffness = SpringAnimatorHelper.SPRING_FLUID_SCROLL.stiffness,
-            dampingRatio = SpringAnimatorHelper.SPRING_FLUID_SCROLL.dampingRatio,
+            stiffness = LyricMotionMath.LYRIC_SCROLL_STIFFNESS,
+            dampingRatio = LyricMotionMath.LYRIC_SCROLL_DAMPING_RATIO,
             valueThreshold = 0.05f,
             channel = CHANNEL_SCROLL,
             onUpdate = { v ->
@@ -368,6 +388,13 @@ class LyricsRecyclerAdapter(
                 val rem = subPixelAccumulator.flushRemainder()
                 if (rem != 0) {
                     recyclerView.scrollBy(0, rem)
+                }
+                val finalView = layoutManager.findViewByPosition(position)
+                if (finalView != null) {
+                    val drift = finalView.top - recyclerView.paddingTop
+                    if (drift != 0) {
+                        recyclerView.scrollBy(0, drift)
+                    }
                 }
                 subPixelAccumulator.reset()
                 lastSpringScrollValue = 0f
@@ -388,6 +415,7 @@ class LyricsRecyclerAdapter(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
             )
+            background = null
             setPadding(hPad, vPad, hPad, vPad)
             gravity = Gravity.START or Gravity.CENTER_VERTICAL
             pivotX = hPad.toFloat()
@@ -396,6 +424,8 @@ class LyricsRecyclerAdapter(
         val mainTv = TextView(parent.context).apply {
             maxLines = Int.MAX_VALUE
             ellipsize = null
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, SIZE_PRIMARY_SP)
+            typeface = TYPEFACE_BOLD
             setLineSpacing(2f * density, 1.14f)
         }
         val romanizedTv = TextView(parent.context).apply {
@@ -498,68 +528,37 @@ class LyricsRecyclerAdapter(
 
     private fun bindVisualState(holder: LyricViewHolder, position: Int, animateFocus: Boolean) {
         val row = holder.rowView
-        val tv = holder.mainText
-        val rom = holder.romanizedText
-        val sub = holder.subText
+        if (row.background != null) row.background = null
 
         val isSelected = selectedIndices.contains(position)
         val isFocused: Boolean
-        val targetColor: Int
-        val romColor: Int
-        val subColor: Int
-        val targetSizeSp: Float
-        val targetTypeface: Typeface
+        val unfocusedMainColor: Int
+        val focusedMainColor: Int
 
         if (selectionMode) {
             isFocused = isSelected
-            targetColor = if (isSelected) COLOR_ACTIVE else COLOR_PAST
-            romColor = if (isSelected) COLOR_ROM_ACTIVE else COLOR_ROM_INACTIVE
-            subColor = if (isSelected) accentTranslationFocusedColor else accentTranslationMutedColor
-            targetSizeSp = if (isSelected) SIZE_ACTIVE_SP else SIZE_INACTIVE_SP
-            targetTypeface = if (isSelected) TYPEFACE_BOLD else TYPEFACE_MEDIUM
-            row.setBackgroundColor(if (isSelected) COLOR_SELECTED_BG else 0)
+            unfocusedMainColor = COLOR_PAST
+            focusedMainColor = COLOR_ACTIVE
         } else if (!synced) {
             isFocused = true
-            targetColor = COLOR_STATIC
-            romColor = COLOR_ROM_ACTIVE
-            subColor = accentTranslationFocusedColor
-            targetSizeSp = SIZE_INACTIVE_SP
-            targetTypeface = TYPEFACE_MEDIUM
-            row.background = null
+            unfocusedMainColor = COLOR_STATIC
+            focusedMainColor = COLOR_STATIC
         } else if (position == activeIndex) {
             isFocused = true
-            targetColor = COLOR_ACTIVE
-            romColor = COLOR_ROM_ACTIVE
-            subColor = accentTranslationFocusedColor
-            targetSizeSp = SIZE_ACTIVE_SP
-            targetTypeface = TYPEFACE_BOLD
-            holder.activePillGlass.setPalette(currentPalette)
-            if (row.background !== holder.activePillGlass) row.background = holder.activePillGlass
+            unfocusedMainColor = COLOR_UPCOMING
+            focusedMainColor = COLOR_ACTIVE
         } else if (activeIndex >= 0 && position < activeIndex) {
             isFocused = false
-            targetColor = COLOR_PAST
-            romColor = COLOR_ROM_INACTIVE
-            subColor = accentTranslationMutedColor
-            targetSizeSp = SIZE_INACTIVE_SP
-            targetTypeface = TYPEFACE_MEDIUM
-            holder.activePillGlass.setPalette(currentPalette)
-            if (row.background !== holder.activePillGlass) row.background = holder.activePillGlass
+            unfocusedMainColor = COLOR_PAST
+            focusedMainColor = COLOR_ACTIVE
         } else {
             isFocused = false
-            targetColor = COLOR_UPCOMING
-            romColor = COLOR_ROM_INACTIVE
-            subColor = accentTranslationMutedColor
-            targetSizeSp = SIZE_INACTIVE_SP
-            targetTypeface = TYPEFACE_MEDIUM
-            holder.activePillGlass.setPalette(currentPalette)
-            if (row.background !== holder.activePillGlass) row.background = holder.activePillGlass
+            unfocusedMainColor = COLOR_UPCOMING
+            focusedMainColor = COLOR_ACTIVE
         }
 
-        if (tv.currentTextColor != targetColor) tv.setTextColor(targetColor)
-        if (rom.currentTextColor != romColor) rom.setTextColor(romColor)
-        if (sub.currentTextColor != subColor) sub.setTextColor(subColor)
-        if (tv.typeface !== targetTypeface) tv.typeface = targetTypeface
-        tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, targetSizeSp)
+        holder.unfocusedMainColor = unfocusedMainColor
+        holder.focusedMainColor = focusedMainColor
 
         val targetFocus = if (isFocused) 1f else 0f
         if (animateFocus && !SpringAnimatorHelper.isReducedMotionEnabled(row.context)) {
@@ -567,8 +566,8 @@ class LyricsRecyclerAdapter(
                 key = row,
                 start = holder.focusProgress,
                 target = targetFocus,
-                stiffness = 340f,
-                dampingRatio = 0.86f,
+                stiffness = LyricMotionMath.LYRIC_SCROLL_STIFFNESS,
+                dampingRatio = LyricMotionMath.LYRIC_SCROLL_DAMPING_RATIO,
                 channel = CHANNEL_FOCUS,
                 onUpdate = { p ->
                     applyFocusVisuals(holder, position, p)
@@ -582,19 +581,27 @@ class LyricsRecyclerAdapter(
 
     private fun applyFocusVisuals(holder: LyricViewHolder, position: Int, focusProgress: Float) {
         val row = holder.rowView
+        val clamped = focusProgress.coerceIn(0f, 1f)
         holder.focusProgress = focusProgress
-        val scale = LyricMotionMath.computeFocusScale(focusProgress)
+        row.pivotX = row.paddingLeft.toFloat()
+        if (row.height > 0) {
+            row.pivotY = row.height * 0.5f
+        }
+        val scale = LyricMotionMath.computeFocusScale(clamped)
         row.scaleX = scale
         row.scaleY = scale
-        row.alpha = LyricMotionMath.computeFocusAlpha(focusProgress)
+        row.alpha = LyricMotionMath.computeFocusAlpha(clamped)
 
-        if (!selectionMode && synced && row.background === holder.activePillGlass) {
-            holder.activePillGlass.alpha = (focusProgress.coerceIn(0f, 1f) * 200f).roundToInt().coerceIn(0, 200)
-        }
+        val mainColor = LyricMotionMath.interpolateColor(holder.unfocusedMainColor, holder.focusedMainColor, clamped)
+        val romColor = LyricMotionMath.interpolateColor(COLOR_ROM_INACTIVE, COLOR_ROM_ACTIVE, clamped)
+        val subColor = LyricMotionMath.interpolateColor(accentTranslationMutedColor, accentTranslationFocusedColor, clamped)
+        if (holder.mainText.currentTextColor != mainColor) holder.mainText.setTextColor(mainColor)
+        if (holder.romanizedText.currentTextColor != romColor) holder.romanizedText.setTextColor(romColor)
+        if (holder.subText.currentTextColor != subColor) holder.subText.setTextColor(subColor)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             val dist = if (activeIndex >= 0) abs(position - activeIndex) else -1
-            val blurIdx = LyricMotionMath.selectBlurPoolIndex(focusProgress, dist, synced, selectionMode)
+            val blurIdx = LyricMotionMath.selectBlurPoolIndex(clamped, dist, synced, selectionMode)
             if (holder.appliedBlurIndex != blurIdx) {
                 holder.appliedBlurIndex = blurIdx
                 row.setRenderEffect(BLUR_POOL[blurIdx])
@@ -608,12 +615,10 @@ class LyricsRecyclerAdapter(
         val romanizedText: TextView,
         val subText: TextView
     ) : RecyclerView.ViewHolder(rowView) {
-        val activePillGlass = LiquidGlassDrawable(rowView.context, 16f).apply {
-            setTintProfile(baseFraction = 0.16f, accentFraction = 0.24f, preferAccentGlow = true)
-            alpha = 0
-        }
         var appliedBlurIndex: Int = -1
         var focusProgress: Float = 0f
+        var unfocusedMainColor: Int = COLOR_UPCOMING
+        var focusedMainColor: Int = COLOR_ACTIVE
     }
 
     internal companion object {
@@ -625,8 +630,7 @@ class LyricsRecyclerAdapter(
         internal const val SCROLL_DURATION_MS = SpringAnimatorHelper.LYRIC_SCROLL_DURATION_MS
         internal const val SCALE_ANIM_MS = SpringAnimatorHelper.LYRIC_SCALE_DURATION_MS
 
-        private const val SIZE_ACTIVE_SP = 22f
-        private const val SIZE_INACTIVE_SP = 18f
+        private const val SIZE_PRIMARY_SP = 21f
         private const val SIZE_ROMANIZED_SP = 14.5f
         private const val SIZE_TRANSLATION_SP = 14f
 
@@ -636,10 +640,9 @@ class LyricsRecyclerAdapter(
         private const val COLOR_STATIC = 0xE6FFFFFF.toInt()
         private const val COLOR_ROM_ACTIVE = 0xCCFFFFFF.toInt()
         private const val COLOR_ROM_INACTIVE = 0x8AFFFFFF.toInt()
-        private const val COLOR_SELECTED_BG = 0x22FFFFFF
 
-        private val TYPEFACE_BOLD: Typeface = Typeface.create("sans-serif", Typeface.BOLD)
-        private val TYPEFACE_MEDIUM: Typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+        private val TYPEFACE_BOLD: Typeface? by lazy { Typeface.create("sans-serif", Typeface.BOLD) }
+        private val TYPEFACE_MEDIUM: Typeface? by lazy { Typeface.create("sans-serif-medium", Typeface.NORMAL) }
 
         private val BLUR_POOL: Array<RenderEffect?> = Array(LyricMotionMath.BLUR_RADII.size) { idx ->
             val r = LyricMotionMath.BLUR_RADII[idx]

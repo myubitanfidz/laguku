@@ -194,12 +194,16 @@ class MotionAndInteractiveUiTest {
     }
 
     @Test
-    fun subPixelScrollAccumulator_withFluidSpringConvergesToZeroResidualError() {
+    fun subPixelScrollAccumulator_withUnifiedLyricSpringConvergesToZeroResidualError() {
+        assertEquals(130f, LyricsRecyclerAdapter.LyricMotionMath.LYRIC_SCROLL_STIFFNESS, 0.0001f)
+        assertEquals(0.96f, LyricsRecyclerAdapter.LyricMotionMath.LYRIC_SCROLL_DAMPING_RATIO, 0.0001f)
+        assertFalse(LyricsRecyclerAdapter.LyricMotionMath.HAS_ITEM_BACKGROUND)
+
         val solver = SpringAnimatorHelper.SpringSolver(
             value = 0f,
             target = 137.4f,
-            stiffness = SpringAnimatorHelper.SPRING_FLUID_SCROLL.stiffness,
-            dampingRatio = SpringAnimatorHelper.SPRING_FLUID_SCROLL.dampingRatio,
+            stiffness = LyricsRecyclerAdapter.LyricMotionMath.LYRIC_SCROLL_STIFFNESS,
+            dampingRatio = LyricsRecyclerAdapter.LyricMotionMath.LYRIC_SCROLL_DAMPING_RATIO,
             valueThreshold = 0.05f,
             velocityThreshold = 0.5f
         )
@@ -208,7 +212,7 @@ class MotionAndInteractiveUiTest {
         var scrolledPx = 0
         var settled = false
         var ticks = 0
-        while (!settled && ticks < 400) {
+        while (!settled && ticks < 500) {
             settled = solver.step(1f / 60f)
             val floatDelta = solver.value - lastVal
             lastVal = solver.value
@@ -218,7 +222,36 @@ class MotionAndInteractiveUiTest {
         scrolledPx += accumulator.flushRemainder()
         assertTrue(settled)
         assertEquals(137, scrolledPx)
+        assertEquals(0f, accumulator.subPixelRemainder, 0.0001f)
         assertEquals(0f, accumulator.remainder, 0.0001f)
+    }
+
+    @Test
+    fun lyricViewHolder_hasNoBackgroundDrawableFieldAndSetActiveIndexSkipsNotifyItemChanged() {
+        val bgFields = LyricsRecyclerAdapter.LyricViewHolder::class.java.declaredFields.filter { field ->
+            field.name.contains("Glass", ignoreCase = true) ||
+                field.name.contains("Pill", ignoreCase = true) ||
+                field.name.contains("Background", ignoreCase = true)
+        }
+        assertTrue("LyricViewHolder must not hold any pill/background drawable fields: $bgFields", bgFields.isEmpty())
+
+        val adapter = LyricsRecyclerAdapter(onLineTap = { _, _ -> })
+        val parsed = com.laguku.player.lyrics.LrcParser.parse("[00:01.00]Line 1\n[00:05.00]Line 2\n[00:10.00]Line 3")
+        // Seed adapter state directly (RecyclerView's AdapterDataObservable throws NPE in JVM stub jar if any notify* is called)
+        LyricsRecyclerAdapter::class.java.getDeclaredField("lines").apply {
+            isAccessible = true
+            set(adapter, parsed.lines)
+        }
+        LyricsRecyclerAdapter::class.java.getDeclaredField("synced").apply {
+            isAccessible = true
+            setBoolean(adapter, true)
+        }
+
+        // Must update activeIndex in-place without invoking notifyItemChanged / notifyItemRangeChanged
+        adapter.setActiveIndex(1, recyclerView = null, autoScroll = false)
+        assertEquals(1, adapter.getActiveIndex())
+        adapter.setActiveIndex(2, recyclerView = null, autoScroll = false)
+        assertEquals(2, adapter.getActiveIndex())
     }
 
     @Test

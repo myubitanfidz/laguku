@@ -217,7 +217,6 @@ class NowPlayingView(
     private var btLyricOffsetMs: Long = 0L
     private var lyricHighlightFraction: Float = PlaybackStateStore.LYRIC_ANCHOR_OPTIMAL
     private val lyricTunerState = LyricTunerState()
-    private var lastActiveLayoutHeight: Int = 0
     private var pendingInitialLyricSnap: Boolean = false
     private var plainLyricsFallback: String? = null
 
@@ -577,7 +576,6 @@ class NowPlayingView(
         lyricsAdapter.cancelScrollAnimation(lyricsRecycler)
         lyricsAdapter.submitLyrics(parsed)
         manualScrollPaused = false
-        lastActiveLayoutHeight = 0
         pendingInitialLyricSnap = parsed.lines.isNotEmpty()
         mainHandler.removeCallbacks(autoResumeRunnable)
         returnToActivePill.visibility = View.GONE
@@ -1047,18 +1045,6 @@ class NowPlayingView(
                         pendingInitialLyricSnap = false
                         rv.post {
                             lyricsAdapter.snapToInitialAnchor(recycler)
-                        }
-                    } else {
-                        val activeIdx = lyricsAdapter.getActiveIndex()
-                        if (displayMode == DisplayMode.LYRICS_FOCUS && !manualScrollPaused && activeIdx >= 0) {
-                            val activeChild = recycler.layoutManager?.findViewByPosition(activeIdx)
-                            val activeH = activeChild?.height ?: 0
-                            if (activeH > 0 && activeH != lastActiveLayoutHeight) {
-                                lastActiveLayoutHeight = activeH
-                                rv.post {
-                                    lyricsAdapter.scrollToActiveLine(recycler, activeIdx, animated = false)
-                                }
-                            }
                         }
                     }
                 }
