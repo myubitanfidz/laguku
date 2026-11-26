@@ -1,10 +1,14 @@
 package com.laguku.player
 
 import com.laguku.player.widget.LagukuPillWidgetProvider
+import com.laguku.player.widget.LagukuPillWidgetProvider.BackdropBitmapCache
+import com.laguku.player.widget.LagukuPillWidgetProvider.BackdropCacheKey
 import com.laguku.player.widget.LagukuPillWidgetProvider.PinWidgetStatus
 import com.laguku.player.widget.LagukuPillWidgetProvider.WidgetLayoutMode
+import com.laguku.player.widget.LagukuPillWidgetProvider.WidgetOpticsMath
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -146,5 +150,61 @@ class WidgetPillTest {
         assertTrue(strings.contains("ketuk Semua"))
         assertTrue(strings.contains("Widget Android"))
         assertTrue(strings.contains("pilih Laguku"))
+    }
+
+    @Test
+    fun widgetOpticsMath_computesConcentricRadiusBinderSafeBoundsAndHighContrastAmbient() {
+        // Binder-safe offscreen bitmap dimensions (<= 720x180 and < 1 MB ARGB_8888)
+        val (stdW, stdH) = WidgetOpticsMath.computeBackdropSizePx(widthDp = 320, heightDp = 64, density = 3.0f)
+        assertTrue("Width must stay <= 720px, got $stdW", stdW <= 720)
+        assertTrue("Height must stay <= 180px, got $stdH", stdH <= 180)
+        assertTrue("Bitmap ARGB byte size must stay far below 1 MB Binder cap", stdW * stdH * 4 < 550_000)
+
+        val (hugeW, hugeH) = WidgetOpticsMath.computeBackdropSizePx(widthDp = 500, heightDp = 140, density = 3.0f)
+        assertTrue(hugeW <= 720)
+        assertTrue(hugeH <= 180)
+
+        // Concentric artwork corner radius = outerRadius - padding clamped in 12..16dp
+        assertEquals(16f, WidgetOpticsMath.computeConcentricArtworkRadiusDp(capsuleHeightDp = 52f, innerPaddingDp = 8f), 0.001f)
+        assertEquals(14f, WidgetOpticsMath.computeConcentricArtworkRadiusDp(capsuleHeightDp = 44f, innerPaddingDp = 8f), 0.001f)
+
+        // Ambient color bleed preserves >= 7.0:1 contrast with white text
+        val (topColor, bottomColor) = WidgetOpticsMath.computeAmbientTintColors(
+            dominantColor = 0xFFFF6D00.toInt(),
+            accentGlow = 0xFFFFAB40.toInt(),
+            isLightBackdrop = false
+        )
+        val topAlpha = ((topColor ushr 24) and 0xFF) / 255f
+        assertEquals(0.58f, topAlpha, 0.01f)
+        val opaqueTop = (0xFF shl 24) or (topColor and 0x00FFFFFF)
+        val opaqueBottom = (0xFF shl 24) or (bottomColor and 0x00FFFFFF)
+        assertTrue(WidgetOpticsMath.computeContrastRatio(0xFFFFFFFF.toInt(), opaqueTop) >= 7.0)
+        assertTrue(WidgetOpticsMath.computeContrastRatio(0xFFFFFFFF.toInt(), opaqueBottom) >= 7.0)
+
+        // 135-degree directional rim alphas: 0.65 -> 0.10 -> 0.35
+        val (ul, mid, lr) = WidgetOpticsMath.computeDirectionalRimAlphas()
+        assertEquals(0.65f, ul, 0.0001f)
+        assertEquals(0.10f, mid, 0.0001f)
+        assertEquals(0.35f, lr, 0.0001f)
+    }
+
+    @Test
+    fun widgetBackdropCache_hitsOnMatchingKeyAndEvictsSafelyWhenBounded() {
+        val cache = BackdropBitmapCache<String>(maxEntries = 2)
+        val k1 = BackdropCacheKey(widthPx = 600, heightPx = 120, dominantColor = 0xFF112233.toInt(), isPlaying = true)
+        val k2 = BackdropCacheKey(widthPx = 600, heightPx = 120, dominantColor = 0xFF112233.toInt(), isPlaying = false)
+        val k3 = BackdropCacheKey(widthPx = 600, heightPx = 120, dominantColor = 0xFF445566.toInt(), isPlaying = true)
+
+        assertNull(cache.put(k1, "bmp1"))
+        assertEquals("bmp1", cache.get(k1))
+        assertNull(cache.put(k2, "bmp2"))
+        // Access k1 so k2 becomes least-recently-used
+        assertEquals("bmp1", cache.get(k1))
+
+        val evicted = cache.put(k3, "bmp3")
+        assertEquals("bmp2", evicted)
+        assertEquals(2, cache.size())
+        assertEquals("bmp1", cache.get(k1))
+        assertEquals("bmp3", cache.get(k3))
     }
 }

@@ -20,19 +20,22 @@ import android.view.View
 import android.widget.RemoteViews
 import com.laguku.player.MainActivity
 import com.laguku.player.R
+import com.laguku.player.model.CoverPalette
 import com.laguku.player.model.Track
 import com.laguku.player.service.PlaybackService
 import com.laguku.player.ui.glass.CoverPaletteExtractor
 import com.laguku.player.ui.glass.StackBlur
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import kotlin.math.pow
+import kotlin.math.roundToInt
 
 /**
- * Resizable Liquid Glass home-screen pill widget for Laguku.
+ * Resizable 4-layer Liquid Glass home-screen pill widget for Laguku.
  *
  * Updates strictly on playback events pushed from [PlaybackService] with zero polling timers.
- * All bitmap blurring and palette composition runs off the main thread on a dedicated
- * single-thread executor.
+ * Offscreen 4-layer glass composition and StackBlur run off the main thread on [widgetExecutor],
+ * keyed by `(widthPx, heightPx, dominantColor, isPlaying)` within Binder's 1 MB budget.
  */
 class LagukuPillWidgetProvider : AppWidgetProvider() {
 
@@ -45,6 +48,153 @@ class LagukuPillWidgetProvider : AppWidgetProvider() {
     enum class PinWidgetStatus {
         PIN_REQUEST_SENT,
         UNSUPPORTED_USE_MANUAL_GUIDE
+    }
+
+    data class BackdropCacheKey(
+        val widthPx: Int,
+        val heightPx: Int,
+        val dominantColor: Int,
+        val isPlaying: Boolean
+    )
+
+    class BackdropBitmapCache<T>(private val maxEntries: Int = 2) {
+        private val entries = LinkedHashMap<BackdropCacheKey, T>(maxEntries + 1, 0.75f, true)
+
+        @Synchronized
+        fun get(key: BackdropCacheKey): T? = entries[key]
+
+        @Synchronized
+        fun put(key: BackdropCacheKey, value: T): T? {
+            entries[key] = value
+            if (entries.size <= maxEntries) return null
+            val eldestKey = entries.entries.firstOrNull()?.key ?: return null
+            return entries.remove(eldestKey)
+        }
+
+        @Synchronized
+        fun size(): Int = entries.size
+
+        @Synchronized
+        fun clear(): List<T> {
+            val all = entries.values.toList()
+            entries.clear()
+            return all
+        }
+    }
+
+    object WidgetOpticsMath {
+        const val MAX_BACKDROP_WIDTH_PX = 720
+        const val MAX_BACKDROP_HEIGHT_PX = 180
+        const val OUTER_MARGIN_DP = 4f
+        const val INNER_ARTWORK_PADDING_DP = 8f
+        const val BEZEL_HINT_DP = 10f
+
+        const val NEUTRAL_IDLE_COLOR = 0xFF1A202C.toInt()
+        const val GLASS_BASE_DARK = 0xFF0C0E14.toInt()
+
+        const val ALPHA_DARK_BACKDROP = 0.58f
+        const val ALPHA_LIGHT_BACKDROP = 0.68f
+
+        const val RIM_ALPHA_UPPER_LEFT = 0.65f
+        const val RIM_ALPHA_MID = 0.10f
+        const val RIM_ALPHA_LOWER_RIGHT = 0.35f
+
+        fun computeBackdropSizePx(
+            widthDp: Int,
+            heightDp: Int,
+            density: Float
+        ): Pair<Int, Int> {
+            val contentWidthDp = (widthDp - OUTER_MARGIN_DP * 2f).coerceAtLeast(120f)
+            val contentHeightDp = (heightDp - OUTER_MARGIN_DP * 2f).coerceAtLeast(44f)
+            val scale = density.coerceIn(1.5f, 2.5f)
+            var w = (contentWidthDp * scale).roundToInt().coerceAtLeast(1)
+            var h = (contentHeightDp * scale).roundToInt().coerceAtLeast(1)
+            if (w > MAX_BACKDROP_WIDTH_PX || h > MAX_BACKDROP_HEIGHT_PX) {
+                val factor = minOf(
+                    MAX_BACKDROP_WIDTH_PX.toFloat() / w,
+                    MAX_BACKDROP_HEIGHT_PX.toFloat() / h
+                )
+                w = (w * factor).roundToInt().coerceAtLeast(1)
+                h = (h * factor).roundToInt().coerceAtLeast(1)
+            }
+            return w to h
+        }
+
+        fun computeConcentricArtworkRadiusDp(
+            capsuleHeightDp: Float,
+            innerPaddingDp: Float = INNER_ARTWORK_PADDING_DP
+        ): Float {
+            val outerRadiusDp = capsuleHeightDp.coerceAtLeast(24f) * 0.5f
+            return (outerRadiusDp - innerPaddingDp).coerceIn(12f, 16f)
+        }
+
+        fun computeConcentricArtworkRadiusPx(
+            artworkSizePx: Int,
+            capsuleHeightDp: Float,
+            innerPaddingDp: Float = INNER_ARTWORK_PADDING_DP
+        ): Float {
+            val artSpanDp = (capsuleHeightDp - innerPaddingDp * 1.5f).coerceAtLeast(24f)
+            val radiusDp = computeConcentricArtworkRadiusDp(capsuleHeightDp, innerPaddingDp)
+            return ((radiusDp / artSpanDp) * artworkSizePx).coerceIn(8f, artworkSizePx * 0.45f)
+        }
+
+        fun computeAmbientTintColors(
+            dominantColor: Int,
+            accentGlow: Int = dominantColor,
+            isLightBackdrop: Boolean = false
+        ): Pair<Int, Int> {
+            val alpha = if (isLightBackdrop) ALPHA_LIGHT_BACKDROP else ALPHA_DARK_BACKDROP
+            val alphaByte = (alpha * 255f).roundToInt().coerceIn(0, 255)
+            val topTint = blendDarkGlass(accentGlow, dominantColor, bleedWeight = 0.28f, maxChannel = 54)
+            val bottomTint = blendDarkGlass(dominantColor, GLASS_BASE_DARK, bleedWeight = 0.18f, maxChannel = 34)
+            return ((alphaByte shl 24) or (topTint and 0x00FFFFFF)) to
+                ((alphaByte shl 24) or (bottomTint and 0x00FFFFFF))
+        }
+
+        fun computeDirectionalRimAlphas(): Triple<Float, Float, Float> {
+            return Triple(RIM_ALPHA_UPPER_LEFT, RIM_ALPHA_MID, RIM_ALPHA_LOWER_RIGHT)
+        }
+
+        fun computeRelativeLuminance(argb: Int): Double {
+            fun linearize(channel: Int): Double {
+                val c = (channel and 0xFF) / 255.0
+                return if (c <= 0.03928) c / 12.92 else ((c + 0.055) / 1.055).pow(2.4)
+            }
+            val r = linearize(argb ushr 16)
+            val g = linearize(argb ushr 8)
+            val b = linearize(argb)
+            return 0.2126 * r + 0.7152 * g + 0.0722 * b
+        }
+
+        fun computeContrastRatio(foregroundArgb: Int, backgroundArgb: Int): Double {
+            val l1 = computeRelativeLuminance(foregroundArgb)
+            val l2 = computeRelativeLuminance(backgroundArgb)
+            val lighter = maxOf(l1, l2)
+            val darker = minOf(l1, l2)
+            return (lighter + 0.05) / (darker + 0.05)
+        }
+
+        private fun blendDarkGlass(
+            sourceA: Int,
+            sourceB: Int,
+            bleedWeight: Float,
+            maxChannel: Int
+        ): Int {
+            val baseR = (GLASS_BASE_DARK ushr 16) and 0xFF
+            val baseG = (GLASS_BASE_DARK ushr 8) and 0xFF
+            val baseB = GLASS_BASE_DARK and 0xFF
+
+            val aR = (((sourceA ushr 16) and 0xFF) * 0.6f + ((sourceB ushr 16) and 0xFF) * 0.4f)
+            val aG = (((sourceA ushr 8) and 0xFF) * 0.6f + ((sourceB ushr 8) and 0xFF) * 0.4f)
+            val aB = ((sourceA and 0xFF) * 0.6f + (sourceB and 0xFF) * 0.4f)
+
+            val w = bleedWeight.coerceIn(0f, 0.45f)
+            val inv = 1f - w
+            val r = (baseR * inv + aR * w).roundToInt().coerceIn(0, maxChannel)
+            val g = (baseG * inv + aG * w).roundToInt().coerceIn(0, maxChannel)
+            val b = (baseB * inv + aB * w).roundToInt().coerceIn(0, maxChannel)
+            return (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+        }
     }
 
     override fun onReceive(context: Context, intent: Intent) {
@@ -66,8 +216,25 @@ class LagukuPillWidgetProvider : AppWidgetProvider() {
     ) {
         val state = cachedState
         val appContext = context.applicationContext
+        val density = appContext.resources.displayMetrics.density
+        var needsAsyncBackdrop = false
         for (appWidgetId in appWidgetIds) {
-            applyWidgetUpdate(appContext, appWidgetManager, appWidgetId, state)
+            val options = appWidgetManager.getAppWidgetOptions(appWidgetId)
+            val minWidthDp = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, DEFAULT_MIN_WIDTH_DP)
+            val minHeightDp = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, DEFAULT_MIN_HEIGHT_DP)
+            val (bmpW, bmpH) = WidgetOpticsMath.computeBackdropSizePx(minWidthDp, minHeightDp, density)
+            val key = BackdropCacheKey(bmpW, bmpH, state.dominantColor, state.isPlaying)
+            val cachedBmp = backdropCache.get(key)?.takeIf { !it.isRecycled }
+            if (cachedBmp == null) needsAsyncBackdrop = true
+            applyWidgetUpdate(appContext, appWidgetManager, appWidgetId, state, cachedBmp, options)
+        }
+        if (needsAsyncBackdrop) {
+            val idsCopy = appWidgetIds.copyOf()
+            widgetExecutor.execute {
+                for (id in idsCopy) {
+                    renderAndApplyForWidgetId(appContext, appWidgetManager, id, cachedState)
+                }
+            }
         }
     }
 
@@ -78,13 +245,33 @@ class LagukuPillWidgetProvider : AppWidgetProvider() {
         newOptions: Bundle
     ) {
         super.onAppWidgetOptionsChanged(context, appWidgetManager, appWidgetId, newOptions)
-        applyWidgetUpdate(
-            context.applicationContext,
-            appWidgetManager,
-            appWidgetId,
-            cachedState,
-            overrideOptions = newOptions
-        )
+        val appContext = context.applicationContext
+        val state = cachedState
+        val density = appContext.resources.displayMetrics.density
+        val minWidthDp = newOptions.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, DEFAULT_MIN_WIDTH_DP)
+        val minHeightDp = newOptions.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, DEFAULT_MIN_HEIGHT_DP)
+        val (bmpW, bmpH) = WidgetOpticsMath.computeBackdropSizePx(minWidthDp, minHeightDp, density)
+        val key = BackdropCacheKey(bmpW, bmpH, state.dominantColor, state.isPlaying)
+        val cachedBmp = backdropCache.get(key)?.takeIf { !it.isRecycled }
+        applyWidgetUpdate(appContext, appWidgetManager, appWidgetId, state, cachedBmp, newOptions)
+        if (cachedBmp == null) {
+            widgetExecutor.execute {
+                renderAndApplyForWidgetId(appContext, appWidgetManager, appWidgetId, cachedState, newOptions)
+            }
+        }
+    }
+
+    override fun onDisabled(context: Context) {
+        super.onDisabled(context)
+        widgetExecutor.execute {
+            for (bmp in backdropCache.clear()) {
+                if (!bmp.isRecycled) bmp.recycle()
+            }
+            pendingRecycleBackdrop?.takeIf { !it.isRecycled }?.recycle()
+            pendingRecycleBackdrop = null
+            pendingRecycleBlurred?.takeIf { !it.isRecycled }?.recycle()
+            pendingRecycleBlurred = null
+        }
     }
 
     private data class CachedWidgetState(
@@ -92,7 +279,9 @@ class LagukuPillWidgetProvider : AppWidgetProvider() {
         val isPlaying: Boolean = false,
         val artworkPath: String? = null,
         val artworkIdentity: Int = 0,
-        val backdropBitmap: Bitmap? = null,
+        val palette: CoverPalette = CoverPaletteExtractor.defaultPalette(),
+        val dominantColor: Int = WidgetOpticsMath.NEUTRAL_IDLE_COLOR,
+        val blurred64: Bitmap? = null,
         val roundedArtworkBitmap: Bitmap? = null
     )
 
@@ -100,10 +289,7 @@ class LagukuPillWidgetProvider : AppWidgetProvider() {
         const val EXTRA_OPEN_NOW_PLAYING = "com.laguku.player.EXTRA_OPEN_NOW_PLAYING"
         const val ACTION_WIDGET_PINNED = "com.laguku.player.action.WIDGET_PINNED"
 
-        private const val BACKDROP_MAX_WIDTH = 320
-        private const val BACKDROP_MAX_HEIGHT = 120
         private const val ARTWORK_SIZE_PX = 128
-        private const val ARTWORK_CORNER_RADIUS_PX = 24f
         private const val STACK_BLUR_RADIUS = 12
 
         private const val DEFAULT_MIN_WIDTH_DP = 250
@@ -115,17 +301,22 @@ class LagukuPillWidgetProvider : AppWidgetProvider() {
         private const val REQ_NEXT = 203
         private const val REQ_PIN_WIDGET = 204
 
-        private const val SHEEN_TOP_COLOR = 0x22FFFFFF
+        private const val SHEEN_TOP_COLOR = 0x36FFFFFF
         private const val SHEEN_BOTTOM_COLOR = 0x00FFFFFF
-        private const val RIM_TOP_LEFT_COLOR = 0x57FFFFFF
-        private const val RIM_BOTTOM_RIGHT_COLOR = 0x0DFFFFFF
+        private const val DEPTH_TOP_COLOR = 0x00000000
+        private const val DEPTH_BOTTOM_COLOR = 0x28000000
 
         private val widgetExecutor: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
             Thread(runnable, "LagukuWidgetWorker").apply { isDaemon = true }
         }
 
+        private val backdropCache = BackdropBitmapCache<Bitmap>(maxEntries = 2)
+
         @Volatile
         private var cachedState: CachedWidgetState = CachedWidgetState()
+        private var pendingRecycleBackdrop: Bitmap? = null
+        private var pendingRecycleBlurred: Bitmap? = null
+        private var pendingRecycleArtwork: Bitmap? = null
 
         /**
          * Resolves adaptive layout mode from launcher-supplied widget dimensions in dp.
@@ -205,34 +396,38 @@ class LagukuPillWidgetProvider : AppWidgetProvider() {
                 val appWidgetIds = appWidgetManager.getAppWidgetIds(componentName)
 
                 val prev = cachedState
-                if (appWidgetIds.isEmpty()) {
-                    cachedState = CachedWidgetState(
-                        track = track,
-                        isPlaying = isPlaying
-                    )
-                    return@execute
-                }
-
                 val sameArtwork = artworkRef != null &&
                     trackPath != null &&
                     trackPath == prev.artworkPath &&
                     artworkId == prev.artworkIdentity &&
-                    prev.backdropBitmap != null &&
-                    !prev.backdropBitmap.isRecycled &&
+                    prev.blurred64 != null &&
+                    !prev.blurred64.isRecycled &&
                     prev.roundedArtworkBitmap != null &&
                     !prev.roundedArtworkBitmap.isRecycled
 
-                val backdrop: Bitmap?
+                val palette: CoverPalette
+                val dominantColor: Int
+                val blurred64: Bitmap?
                 val roundedArt: Bitmap?
                 if (sameArtwork) {
-                    backdrop = prev.backdropBitmap
+                    palette = prev.palette
+                    dominantColor = prev.dominantColor
+                    blurred64 = prev.blurred64
                     roundedArt = prev.roundedArtworkBitmap
                 } else if (artworkRef != null && !artworkRef.isRecycled) {
+                    palette = CoverPaletteExtractor.extract(artworkRef)
+                    dominantColor = palette.glassTint
+                    blurred64 = StackBlur.createBlurredBackdrop(artworkRef, radius = STACK_BLUR_RADIUS)
                     val density = appContext.resources.displayMetrics.density
-                    backdrop = composeGlassBackdropBitmap(artworkRef, density)
-                    roundedArt = createRoundedArtworkBitmap(artworkRef)
+                    val cornerPx = WidgetOpticsMath.computeConcentricArtworkRadiusPx(
+                        artworkSizePx = ARTWORK_SIZE_PX,
+                        capsuleHeightDp = DEFAULT_MIN_HEIGHT_DP - WidgetOpticsMath.OUTER_MARGIN_DP * 2f
+                    )
+                    roundedArt = createRoundedArtworkBitmap(artworkRef, cornerPx, density)
                 } else {
-                    backdrop = null
+                    palette = CoverPaletteExtractor.defaultPalette()
+                    dominantColor = WidgetOpticsMath.NEUTRAL_IDLE_COLOR
+                    blurred64 = null
                     roundedArt = null
                 }
 
@@ -241,14 +436,76 @@ class LagukuPillWidgetProvider : AppWidgetProvider() {
                     isPlaying = isPlaying,
                     artworkPath = trackPath,
                     artworkIdentity = artworkId,
-                    backdropBitmap = backdrop,
+                    palette = palette,
+                    dominantColor = dominantColor,
+                    blurred64 = blurred64,
                     roundedArtworkBitmap = roundedArt
                 )
                 cachedState = nextState
 
-                for (appWidgetId in appWidgetIds) {
-                    applyWidgetUpdate(appContext, appWidgetManager, appWidgetId, nextState)
+                if (appWidgetIds.isNotEmpty()) {
+                    for (appWidgetId in appWidgetIds) {
+                        renderAndApplyForWidgetId(appContext, appWidgetManager, appWidgetId, nextState)
+                    }
                 }
+
+                if (!sameArtwork) {
+                    recyclePreviousAfterCommit(prev.blurred64, prev.roundedArtworkBitmap)
+                }
+            }
+        }
+
+        private fun renderAndApplyForWidgetId(
+            context: Context,
+            appWidgetManager: AppWidgetManager,
+            appWidgetId: Int,
+            state: CachedWidgetState,
+            overrideOptions: Bundle? = null
+        ) {
+            val options = overrideOptions ?: appWidgetManager.getAppWidgetOptions(appWidgetId)
+            val minWidthDp = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, DEFAULT_MIN_WIDTH_DP)
+            val minHeightDp = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, DEFAULT_MIN_HEIGHT_DP)
+            val density = context.resources.displayMetrics.density
+            val (bmpW, bmpH) = WidgetOpticsMath.computeBackdropSizePx(minWidthDp, minHeightDp, density)
+            val key = BackdropCacheKey(bmpW, bmpH, state.dominantColor, state.isPlaying)
+
+            var backdrop = backdropCache.get(key)?.takeIf { !it.isRecycled }
+            var evicted: Bitmap? = null
+            if (backdrop == null) {
+                backdrop = composeGlassBackdropBitmap(
+                    widthPx = bmpW,
+                    heightPx = bmpH,
+                    capsuleHeightDp = (minHeightDp - WidgetOpticsMath.OUTER_MARGIN_DP * 2f).coerceAtLeast(44f),
+                    palette = state.palette,
+                    dominantColor = state.dominantColor,
+                    blurred64 = state.blurred64?.takeIf { !it.isRecycled },
+                    isPlaying = state.isPlaying
+                )
+                evicted = backdropCache.put(key, backdrop)
+            }
+
+            applyWidgetUpdate(context, appWidgetManager, appWidgetId, state, backdrop, options)
+
+            if (evicted != null && evicted !== backdrop) {
+                val previousPending = pendingRecycleBackdrop
+                pendingRecycleBackdrop = evicted
+                if (previousPending != null && previousPending !== backdrop && !previousPending.isRecycled) {
+                    previousPending.recycle()
+                }
+            }
+        }
+
+        private fun recyclePreviousAfterCommit(oldBlurred: Bitmap?, oldRoundedArt: Bitmap?) {
+            val prevB = pendingRecycleBlurred
+            pendingRecycleBlurred = oldBlurred
+            if (prevB != null && prevB !== oldBlurred && !prevB.isRecycled) {
+                prevB.recycle()
+            }
+
+            val prevArt = pendingRecycleArtwork
+            pendingRecycleArtwork = oldRoundedArt
+            if (prevArt != null && prevArt !== oldRoundedArt && !prevArt.isRecycled) {
+                prevArt.recycle()
             }
         }
 
@@ -257,6 +514,7 @@ class LagukuPillWidgetProvider : AppWidgetProvider() {
             appWidgetManager: AppWidgetManager,
             appWidgetId: Int,
             state: CachedWidgetState,
+            backdropBitmap: Bitmap?,
             overrideOptions: Bundle? = null
         ) {
             val options = overrideOptions ?: appWidgetManager.getAppWidgetOptions(appWidgetId)
@@ -298,11 +556,13 @@ class LagukuPillWidgetProvider : AppWidgetProvider() {
                 if (state.isPlaying) R.drawable.ic_pause else R.drawable.ic_play
             )
 
-            val backdrop = state.backdropBitmap?.takeIf { !it.isRecycled }
+            val backdrop = backdropBitmap?.takeIf { !it.isRecycled }
             if (backdrop != null) {
+                views.setInt(R.id.widget_capsule, "setBackgroundResource", 0)
                 views.setViewVisibility(R.id.widget_backdrop, View.VISIBLE)
                 views.setImageViewBitmap(R.id.widget_backdrop, backdrop)
             } else {
+                views.setInt(R.id.widget_capsule, "setBackgroundResource", R.drawable.bg_widget_pill_glass)
                 views.setViewVisibility(R.id.widget_backdrop, View.GONE)
             }
 
@@ -368,87 +628,159 @@ class LagukuPillWidgetProvider : AppWidgetProvider() {
         }
 
         /**
-         * Composes a lightweight (<= 320x120) Liquid Glass backdrop bitmap combining:
-         * - 64x64 2-pass StackBlur (radius 12) + #7A080A0F scrim
-         * - CoverPaletteExtractor deepBackdrop / accentGlow translucent layers
-         * - Top-edge glass sheen and 1.2dp diagonal specular rim highlight
+         * Renders the 4-layer Liquid Glass capsule offscreen bitmap at exact widget aspect ratio:
+         * 1. Ambient Color Bleed & Tint (underlay + high-contrast translucent gradient)
+         * 2. Top Specular Sheen & Bottom Optical Depth
+         * 3. Bezel Edge Refraction Hint (~10dp inward perimeter band, centerWarp = false)
+         * 4. 135-degree Directional Perimeter Rim Light (0.65 -> 0.10 -> 0.35 alpha at 1.0dp)
          */
-        private fun composeGlassBackdropBitmap(artwork: Bitmap, density: Float): Bitmap {
-            val blurred64 = StackBlur.createBlurredBackdrop(artwork, radius = STACK_BLUR_RADIUS)
-            val palette = CoverPaletteExtractor.extract(artwork)
+        private fun composeGlassBackdropBitmap(
+            widthPx: Int,
+            heightPx: Int,
+            capsuleHeightDp: Float,
+            palette: CoverPalette,
+            dominantColor: Int,
+            blurred64: Bitmap?,
+            isPlaying: Boolean
+        ): Bitmap {
+            val output = Bitmap.createBitmap(widthPx, heightPx, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(output)
+            val pxPerDp = (heightPx / capsuleHeightDp.coerceAtLeast(1f)).coerceAtLeast(1f)
+            val aaInset = (0.75f * pxPerDp).coerceIn(1f, 2f)
+            val destRect = RectF(aaInset, aaInset, widthPx - aaInset, heightPx - aaInset)
+            val capsuleRadius = destRect.height() * 0.5f
 
-            val output = Bitmap.createBitmap(
-                BACKDROP_MAX_WIDTH,
-                BACKDROP_MAX_HEIGHT,
-                Bitmap.Config.ARGB_8888
-            )
-            try {
-                val canvas = Canvas(output)
-                val destRect = RectF(0f, 0f, BACKDROP_MAX_WIDTH.toFloat(), BACKDROP_MAX_HEIGHT.toFloat())
-                val cornerRadius = (BACKDROP_MAX_HEIGHT * 0.43f)
-                val clipPath = Path().apply {
-                    addRoundRect(destRect, cornerRadius, cornerRadius, Path.Direction.CW)
-                }
-                canvas.clipPath(clipPath)
-                val bitmapPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
-                canvas.drawBitmap(blurred64, null, destRect, bitmapPaint)
-
-                // Match LiquidGlassDrawable layered fill: dark base + subtle accent tint
-                val basePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                    style = Paint.Style.FILL
-                    color = (0x73 shl 24) or (palette.deepBackdrop and 0x00FFFFFF)
-                }
-                canvas.drawRect(destRect, basePaint)
-
-                val accentPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                    style = Paint.Style.FILL
-                    color = (0x24 shl 24) or (palette.accentGlow and 0x00FFFFFF)
-                }
-                canvas.drawRect(destRect, accentPaint)
-
-                val sheenPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                    style = Paint.Style.FILL
-                    shader = LinearGradient(
-                        0f,
-                        0f,
-                        0f,
-                        BACKDROP_MAX_HEIGHT * 0.45f,
-                        SHEEN_TOP_COLOR,
-                        SHEEN_BOTTOM_COLOR,
-                        Shader.TileMode.CLAMP
-                    )
-                }
-                canvas.drawRect(destRect, sheenPaint)
-
-                val strokePx = (1.2f * density).coerceAtLeast(1f)
-                val halfStroke = strokePx * 0.5f
-                val rimRect = RectF(
-                    halfStroke,
-                    halfStroke,
-                    BACKDROP_MAX_WIDTH - halfStroke,
-                    BACKDROP_MAX_HEIGHT - halfStroke
-                )
-                val rimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                    style = Paint.Style.STROKE
-                    strokeWidth = strokePx
-                    shader = LinearGradient(
-                        0f,
-                        0f,
-                        BACKDROP_MAX_WIDTH.toFloat(),
-                        BACKDROP_MAX_HEIGHT.toFloat(),
-                        RIM_TOP_LEFT_COLOR,
-                        RIM_BOTTOM_RIGHT_COLOR,
-                        Shader.TileMode.CLAMP
-                    )
-                }
-                canvas.drawRoundRect(rimRect, cornerRadius, cornerRadius, rimPaint)
-            } finally {
-                blurred64.recycle()
+            val clipPath = Path().apply {
+                addRoundRect(destRect, capsuleRadius, capsuleRadius, Path.Direction.CW)
             }
+            canvas.save()
+            canvas.clipPath(clipPath)
+
+            // Layer 1: Ambient Color Bleed & Translucent Tint
+            if (blurred64 != null && !blurred64.isRecycled) {
+                val blurPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
+                    alpha = 64
+                }
+                canvas.drawBitmap(blurred64, null, destRect, blurPaint)
+            }
+            val (topAmbient, bottomAmbient) = WidgetOpticsMath.computeAmbientTintColors(
+                dominantColor = dominantColor,
+                accentGlow = palette.accentGlow,
+                isLightBackdrop = false
+            )
+            val ambientPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                style = Paint.Style.FILL
+                shader = LinearGradient(
+                    destRect.left,
+                    destRect.top,
+                    destRect.right,
+                    destRect.bottom,
+                    topAmbient,
+                    bottomAmbient,
+                    Shader.TileMode.CLAMP
+                )
+            }
+            canvas.drawRect(destRect, ambientPaint)
+
+            // Layer 2: Top Specular Sheen & Bottom Optical Depth
+            val sheenPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                style = Paint.Style.FILL
+                shader = LinearGradient(
+                    0f,
+                    destRect.top,
+                    0f,
+                    destRect.top + destRect.height() * 0.46f,
+                    SHEEN_TOP_COLOR,
+                    SHEEN_BOTTOM_COLOR,
+                    Shader.TileMode.CLAMP
+                )
+            }
+            canvas.drawRect(destRect, sheenPaint)
+
+            val depthPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                style = Paint.Style.FILL
+                shader = LinearGradient(
+                    0f,
+                    destRect.top + destRect.height() * 0.58f,
+                    0f,
+                    destRect.bottom,
+                    DEPTH_TOP_COLOR,
+                    DEPTH_BOTTOM_COLOR,
+                    Shader.TileMode.CLAMP
+                )
+            }
+            canvas.drawRect(destRect, depthPaint)
+
+            // Layer 3: Bezel Edge Refraction Hint (~10dp rim band, center text untouched)
+            val bezelBandPx = (WidgetOpticsMath.BEZEL_HINT_DP * pxPerDp).coerceIn(6f, capsuleRadius * 0.48f)
+            val bezelStrokeRect = RectF(
+                destRect.left + bezelBandPx * 0.5f,
+                destRect.top + bezelBandPx * 0.5f,
+                destRect.right - bezelBandPx * 0.5f,
+                destRect.bottom - bezelBandPx * 0.5f
+            )
+            val bezelRadius = (capsuleRadius - bezelBandPx * 0.5f).coerceAtLeast(0f)
+            val bezelAlpha = if (isPlaying) 0x22 else 0x18
+            val bezelColors = intArrayOf(
+                (bezelAlpha shl 24) or (palette.accentGlow and 0x00FFFFFF),
+                0x06FFFFFF,
+                (0x14 shl 24) or 0x00FFFFFF
+            )
+            val bezelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                style = Paint.Style.STROKE
+                strokeWidth = bezelBandPx
+                shader = LinearGradient(
+                    destRect.left,
+                    destRect.top,
+                    destRect.right,
+                    destRect.bottom,
+                    bezelColors,
+                    floatArrayOf(0f, 0.5f, 1f),
+                    Shader.TileMode.CLAMP
+                )
+            }
+            canvas.drawRoundRect(bezelStrokeRect, bezelRadius, bezelRadius, bezelPaint)
+
+            // Layer 4: 135-degree Directional Perimeter Rim Light (1.0dp optical hairline)
+            val rimStrokePx = (1.0f * pxPerDp).coerceIn(1f, 2.5f)
+            val halfRim = rimStrokePx * 0.5f
+            val rimRect = RectF(
+                destRect.left + halfRim,
+                destRect.top + halfRim,
+                destRect.right - halfRim,
+                destRect.bottom - halfRim
+            )
+            val rimRadius = (capsuleRadius - halfRim).coerceAtLeast(0f)
+            val (ulAlpha, midAlpha, lrAlpha) = WidgetOpticsMath.computeDirectionalRimAlphas()
+            val rimColors = intArrayOf(
+                ((ulAlpha * 255f).roundToInt().coerceIn(0, 255) shl 24) or 0xFFFFFF,
+                ((midAlpha * 255f).roundToInt().coerceIn(0, 255) shl 24) or 0xFFFFFF,
+                ((lrAlpha * 255f).roundToInt().coerceIn(0, 255) shl 24) or 0xFFFFFF
+            )
+            val rimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                style = Paint.Style.STROKE
+                strokeWidth = rimStrokePx
+                shader = LinearGradient(
+                    destRect.left,
+                    destRect.top,
+                    destRect.right,
+                    destRect.bottom,
+                    rimColors,
+                    floatArrayOf(0f, 0.5f, 1f),
+                    Shader.TileMode.CLAMP
+                )
+            }
+            canvas.drawRoundRect(rimRect, rimRadius, rimRadius, rimPaint)
+            canvas.restore()
+
             return output
         }
 
-        private fun createRoundedArtworkBitmap(source: Bitmap): Bitmap {
+        private fun createRoundedArtworkBitmap(
+            source: Bitmap,
+            cornerRadiusPx: Float,
+            density: Float
+        ): Bitmap {
             val output = Bitmap.createBitmap(ARTWORK_SIZE_PX, ARTWORK_SIZE_PX, Bitmap.Config.ARGB_8888)
             val canvas = Canvas(output)
 
@@ -469,18 +801,27 @@ class LagukuPillWidgetProvider : AppWidgetProvider() {
                 this.shader = shader
             }
             val rect = RectF(0f, 0f, ARTWORK_SIZE_PX.toFloat(), ARTWORK_SIZE_PX.toFloat())
-            canvas.drawRoundRect(rect, ARTWORK_CORNER_RADIUS_PX, ARTWORK_CORNER_RADIUS_PX, paint)
+            canvas.drawRoundRect(rect, cornerRadiusPx, cornerRadiusPx, paint)
 
+            // 0.75dp optical rim matching 44dp widget artwork scale
+            val strokePx = (0.75f * (ARTWORK_SIZE_PX / (44f * density.coerceAtLeast(1f))) * density.coerceAtLeast(1f))
+                .coerceIn(1.2f, 3f)
+            val halfStroke = strokePx * 0.5f
             val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 style = Paint.Style.STROKE
-                strokeWidth = 1.5f
-                color = 0x33FFFFFF
+                strokeWidth = strokePx
+                color = 0x3DFFFFFF
             }
-            val borderRect = RectF(0.75f, 0.75f, ARTWORK_SIZE_PX - 0.75f, ARTWORK_SIZE_PX - 0.75f)
+            val borderRect = RectF(
+                halfStroke,
+                halfStroke,
+                ARTWORK_SIZE_PX - halfStroke,
+                ARTWORK_SIZE_PX - halfStroke
+            )
             canvas.drawRoundRect(
                 borderRect,
-                ARTWORK_CORNER_RADIUS_PX - 0.75f,
-                ARTWORK_CORNER_RADIUS_PX - 0.75f,
+                (cornerRadiusPx - halfStroke).coerceAtLeast(0f),
+                (cornerRadiusPx - halfStroke).coerceAtLeast(0f),
                 borderPaint
             )
 
