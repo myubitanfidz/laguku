@@ -12,6 +12,7 @@ import android.graphics.Canvas
 import android.graphics.LinearGradient
 import android.graphics.Matrix
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.Shader
 import android.os.Bundle
@@ -39,6 +40,23 @@ class LagukuPillWidgetProvider : AppWidgetProvider() {
         COMPACT,
         STANDARD,
         EXPANDED
+    }
+
+    enum class PinWidgetStatus {
+        PIN_REQUEST_SENT,
+        UNSUPPORTED_USE_MANUAL_GUIDE
+    }
+
+    override fun onReceive(context: Context, intent: Intent) {
+        super.onReceive(context, intent)
+        if (intent.action == ACTION_WIDGET_PINNED) {
+            val appContext = context.applicationContext
+            val manager = AppWidgetManager.getInstance(appContext)
+            val ids = manager.getAppWidgetIds(ComponentName(appContext, LagukuPillWidgetProvider::class.java))
+            if (ids.isNotEmpty()) {
+                onUpdate(appContext, manager, ids)
+            }
+        }
     }
 
     override fun onUpdate(
@@ -80,6 +98,7 @@ class LagukuPillWidgetProvider : AppWidgetProvider() {
 
     companion object {
         const val EXTRA_OPEN_NOW_PLAYING = "com.laguku.player.EXTRA_OPEN_NOW_PLAYING"
+        const val ACTION_WIDGET_PINNED = "com.laguku.player.action.WIDGET_PINNED"
 
         private const val BACKDROP_MAX_WIDTH = 320
         private const val BACKDROP_MAX_HEIGHT = 120
@@ -87,13 +106,14 @@ class LagukuPillWidgetProvider : AppWidgetProvider() {
         private const val ARTWORK_CORNER_RADIUS_PX = 24f
         private const val STACK_BLUR_RADIUS = 12
 
-        private const val DEFAULT_MIN_WIDTH_DP = 220
-        private const val DEFAULT_MIN_HEIGHT_DP = 64
+        private const val DEFAULT_MIN_WIDTH_DP = 250
+        private const val DEFAULT_MIN_HEIGHT_DP = 56
 
         private const val REQ_OPEN_NOW_PLAYING = 200
         private const val REQ_PREV = 201
         private const val REQ_PLAY_PAUSE = 202
         private const val REQ_NEXT = 203
+        private const val REQ_PIN_WIDGET = 204
 
         private const val SHEEN_TOP_COLOR = 0x22FFFFFF
         private const val SHEEN_BOTTOM_COLOR = 0x00FFFFFF
@@ -118,16 +138,50 @@ class LagukuPillWidgetProvider : AppWidgetProvider() {
             }
         }
 
+        fun resolvePinRequestStatus(
+            isPinSupported: Boolean,
+            requestAccepted: Boolean
+        ): PinWidgetStatus {
+            return if (isPinSupported && requestAccepted) {
+                PinWidgetStatus.PIN_REQUEST_SENT
+            } else {
+                PinWidgetStatus.UNSUPPORTED_USE_MANUAL_GUIDE
+            }
+        }
+
+        fun resolvePinFeedbackRes(status: PinWidgetStatus): Int {
+            return when (status) {
+                PinWidgetStatus.PIN_REQUEST_SENT -> R.string.pin_widget_requested
+                PinWidgetStatus.UNSUPPORTED_USE_MANUAL_GUIDE -> R.string.pin_widget_unsupported
+            }
+        }
+
         /**
-         * Requests the launcher to pin the Laguku Pill widget onto the home screen.
-         * Returns false when the active launcher does not support automatic pinning.
+         * Requests the launcher to pin the Laguku Pill widget onto the home screen
+         * with an immutable confirmation broadcast PendingIntent.
          */
-        fun requestPinWidget(context: Context): Boolean {
+        fun requestPinWidgetStatus(context: Context): PinWidgetStatus {
             val appContext = context.applicationContext
             val manager = AppWidgetManager.getInstance(appContext)
-            if (!manager.isRequestPinAppWidgetSupported) return false
+            val isSupported = runCatching { manager.isRequestPinAppWidgetSupported }.getOrDefault(false)
+            if (!isSupported) return PinWidgetStatus.UNSUPPORTED_USE_MANUAL_GUIDE
             val provider = ComponentName(appContext, LagukuPillWidgetProvider::class.java)
-            return manager.requestPinAppWidget(provider, null, null)
+            val callbackIntent = Intent(appContext, LagukuPillWidgetProvider::class.java)
+                .setAction(ACTION_WIDGET_PINNED)
+            val successCallback = PendingIntent.getBroadcast(
+                appContext,
+                REQ_PIN_WIDGET,
+                callbackIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            val accepted = runCatching {
+                manager.requestPinAppWidget(provider, null, successCallback)
+            }.getOrDefault(false)
+            return resolvePinRequestStatus(isSupported, accepted)
+        }
+
+        fun requestPinWidget(context: Context): Boolean {
+            return requestPinWidgetStatus(context) == PinWidgetStatus.PIN_REQUEST_SENT
         }
 
         /**
@@ -331,6 +385,11 @@ class LagukuPillWidgetProvider : AppWidgetProvider() {
             try {
                 val canvas = Canvas(output)
                 val destRect = RectF(0f, 0f, BACKDROP_MAX_WIDTH.toFloat(), BACKDROP_MAX_HEIGHT.toFloat())
+                val cornerRadius = (BACKDROP_MAX_HEIGHT * 0.43f)
+                val clipPath = Path().apply {
+                    addRoundRect(destRect, cornerRadius, cornerRadius, Path.Direction.CW)
+                }
+                canvas.clipPath(clipPath)
                 val bitmapPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
                 canvas.drawBitmap(blurred64, null, destRect, bitmapPaint)
 
@@ -382,7 +441,6 @@ class LagukuPillWidgetProvider : AppWidgetProvider() {
                         Shader.TileMode.CLAMP
                     )
                 }
-                val cornerRadius = (BACKDROP_MAX_HEIGHT * 0.43f)
                 canvas.drawRoundRect(rimRect, cornerRadius, cornerRadius, rimPaint)
             } finally {
                 blurred64.recycle()

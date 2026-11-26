@@ -666,10 +666,16 @@ class MainActivity : Activity(), AudioEngine.Listener, LibraryView.Callbacks, Pl
                     refreshFilteredLibraryUi()
                 }
 
-                override fun onPinWidgetToHomeScreen() {
-                    val requested = LagukuPillWidgetProvider.requestPinWidget(this@MainActivity)
-                    val msgRes = if (requested) R.string.pin_widget_requested else R.string.pin_widget_unsupported
-                    Toast.makeText(this@MainActivity, getString(msgRes), Toast.LENGTH_SHORT).show()
+                override fun onPinWidgetToHomeScreen(): Boolean {
+                    val status = LagukuPillWidgetProvider.requestPinWidgetStatus(this@MainActivity)
+                    val requested = status == LagukuPillWidgetProvider.PinWidgetStatus.PIN_REQUEST_SENT
+                    val msgRes = LagukuPillWidgetProvider.resolvePinFeedbackRes(status)
+                    Toast.makeText(
+                        this@MainActivity,
+                        getString(msgRes),
+                        if (requested) Toast.LENGTH_SHORT else Toast.LENGTH_LONG
+                    ).show()
+                    return requested
                 }
 
                 override fun onGlassTransparencyChanged(level: Float) {

@@ -45,7 +45,7 @@ class LibraryUtilitiesSheetView(
         fun onExportBackupJson()
         fun onImportBackupJson()
         fun onUnhideBlacklistedFolder(folderPath: String)
-        fun onPinWidgetToHomeScreen()
+        fun onPinWidgetToHomeScreen(): Boolean
         fun onGlassTransparencyChanged(level: Float)
     }
 
@@ -106,9 +106,18 @@ class LibraryUtilitiesSheetView(
         addActionButton("Pindai Kesehatan Koleksi (Duplikat & Korup)") {
             callbacks?.onRunHealthScan()
         }
-        addActionButton(context.getString(R.string.pin_widget_label)) {
-            callbacks?.onPinWidgetToHomeScreen()
+        val pinGuideTv = TextView(context).apply {
+            text = context.getString(R.string.pin_widget_unsupported)
+            setTextColor(0xCCFFFFFF.toInt())
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            setPadding(dp(4), 0, dp(4), dp(8))
+            visibility = View.GONE
         }
+        addActionButton(context.getString(R.string.pin_widget_label)) {
+            val pinned = callbacks?.onPinWidgetToHomeScreen() == true
+            pinGuideTv.visibility = if (pinned) View.GONE else View.VISIBLE
+        }
+        bodyContainer.addView(pinGuideTv)
 
         addToggleRow("Sembunyikan Audio < 30 Detik", minDurationEnabled) { checked ->
             callbacks?.onToggleMinDurationFilter(checked)
