@@ -368,4 +368,100 @@ class MotionAndInteractiveUiTest {
         assertEquals(1f, bottomEdge.first, 0.0001f)
         assertEquals(0f, bottomEdge.second, 0.0001f)
     }
+
+    @Test
+    fun ambientMeshMath_extracts3ColorsEnforces7To1ContrastAndGatesLifecycle() {
+        assertEquals(20f, NowPlayingView.AmbientMeshMath.MESH_CYCLE_SECONDS, 0.0001f)
+        assertEquals(7.0, NowPlayingView.AmbientMeshMath.MIN_TEXT_CONTRAST_RATIO, 0.0001)
+
+        // Fallback on empty pixels uses dark glass mesh palette
+        val fallback = NowPlayingView.AmbientMeshMath.extractMeshPaletteFromPixels(IntArray(0))
+        assertEquals(NowPlayingView.AmbientMeshMath.defaultMeshPalette(), fallback)
+
+        // Multi-color cover extracts 3 distinct palette blobs
+        val vividPixels = IntArray(90) { i ->
+            when (i % 3) {
+                0 -> 0xFF1E88E5.toInt()
+                1 -> 0xFFE53935.toInt()
+                else -> 0xFF43A047.toInt()
+            }
+        }
+        val extracted = NowPlayingView.AmbientMeshMath.extractMeshPaletteFromPixels(vividPixels)
+        assertTrue(extracted.primaryBlob != extracted.secondaryBlob)
+        assertTrue(extracted.secondaryBlob != extracted.tertiaryBlob)
+
+        // Pure white worst-case cover still enforces >= 7.0:1 contrast with white text
+        val whitePixels = IntArray(64) { 0xFFFFFFFF.toInt() }
+        val whiteMesh = NowPlayingView.AmbientMeshMath.extractMeshPaletteFromPixels(whitePixels)
+        val veilAlpha = NowPlayingView.AmbientMeshMath.computeAdaptiveVeilAlpha(
+            whiteMesh.averageLuminance,
+            whiteMesh.primaryBlob,
+            whiteMesh.secondaryBlob,
+            whiteMesh.tertiaryBlob
+        )
+        val dimmedWhite = NowPlayingView.AmbientMeshMath.blendColorOverBlack(0xFFFFFFFF.toInt(), veilAlpha)
+        assertTrue(
+            NowPlayingView.AmbientMeshMath.computeContrastRatio(0xFFFFFFFF.toInt(), dimmedWhite) >= 7.0
+        )
+
+        // 20s periodic harmonic orbit returns cleanly across full cycle 0..2*PI
+        val startPos = FloatArray(3)
+        val midPos = FloatArray(3)
+        val endPos = FloatArray(3)
+        NowPlayingView.AmbientMeshMath.computeBlobCenterAndRadius(0, 0f, 1080f, 2400f, startPos)
+        NowPlayingView.AmbientMeshMath.computeBlobCenterAndRadius(0, Math.PI.toFloat(), 1080f, 2400f, midPos)
+        NowPlayingView.AmbientMeshMath.computeBlobCenterAndRadius(0, (2.0 * Math.PI).toFloat(), 1080f, 2400f, endPos)
+        assertEquals(startPos[0], endPos[0], 0.1f)
+        assertEquals(startPos[1], endPos[1], 0.1f)
+        assertTrue(kotlin.math.abs(startPos[0] - midPos[0]) > 50f)
+
+        // Lifecycle gating for ambient mesh and word sweep
+        assertTrue(NowPlayingView.AmbientMeshMath.shouldAnimateAmbient(true, true, true, false, 1f))
+        assertFalse(NowPlayingView.AmbientMeshMath.shouldAnimateAmbient(false, true, true, false, 1f))
+        assertFalse(NowPlayingView.AmbientMeshMath.shouldAnimateAmbient(true, false, true, false, 1f))
+        assertFalse(NowPlayingView.AmbientMeshMath.shouldAnimateAmbient(true, true, false, false, 1f))
+        assertFalse(NowPlayingView.AmbientMeshMath.shouldAnimateAmbient(true, true, true, true, 1f))
+        assertFalse(NowPlayingView.AmbientMeshMath.shouldAnimateAmbient(true, true, true, false, 0f))
+
+        assertTrue(
+            NowPlayingView.AmbientMeshMath.shouldAnimateWordSweep(
+                isPlaying = true,
+                isPlayerVisible = true,
+                isHostActive = true,
+                mode = NowPlayingView.DisplayMode.LYRICS_FOCUS,
+                synced = true,
+                animatorDurationScale = 1f
+            )
+        )
+        assertFalse(
+            NowPlayingView.AmbientMeshMath.shouldAnimateWordSweep(
+                isPlaying = false,
+                isPlayerVisible = true,
+                isHostActive = true,
+                mode = NowPlayingView.DisplayMode.LYRICS_FOCUS,
+                synced = true,
+                animatorDurationScale = 1f
+            )
+        )
+        assertFalse(
+            NowPlayingView.AmbientMeshMath.shouldAnimateWordSweep(
+                isPlaying = true,
+                isPlayerVisible = true,
+                isHostActive = true,
+                mode = NowPlayingView.DisplayMode.FULL_COVER,
+                synced = true,
+                animatorDurationScale = 1f
+            )
+        )
+        assertFalse(
+            NowPlayingView.AmbientMeshMath.shouldAnimateWordSweep(
+                isPlaying = true,
+                isPlayerVisible = true,
+                isHostActive = false,
+                mode = NowPlayingView.DisplayMode.LYRICS_FOCUS,
+                synced = true,
+                animatorDurationScale = 1f
+            )
+        )
+    }
 }

@@ -501,6 +501,7 @@ class MainActivity : Activity(), AudioEngine.Listener, LibraryView.Callbacks, Pl
         }.apply {
             visibility = View.GONE
             alpha = 0f
+            setPlayerVisible(false)
             onOpenAudioLab = { openAudioLabSheet() }
             onToggleAmoled = { toggleAmoledNightMode() }
             onLiveLyricOffsetChanged = { track, offsetMs ->
@@ -890,6 +891,7 @@ class MainActivity : Activity(), AudioEngine.Listener, LibraryView.Callbacks, Pl
     private fun showNowPlaying() {
         if (isNowPlayingVisible) return
         isNowPlayingVisible = true
+        nowPlayingView.setPlayerVisible(true)
         audioEngine?.setVisualizerActive(nowPlayingView.isVisualizerDemanded())
         SpringAnimatorHelper.cancelSpring(nowPlayingView)
         nowPlayingView.visibility = View.VISIBLE
@@ -926,6 +928,7 @@ class MainActivity : Activity(), AudioEngine.Listener, LibraryView.Callbacks, Pl
     private fun hideNowPlaying() {
         if (!isNowPlayingVisible) return
         isNowPlayingVisible = false
+        nowPlayingView.setPlayerVisible(false)
         audioEngine?.setVisualizerActive(false)
         SpringAnimatorHelper.cancelSpring(nowPlayingView)
         libraryView.visibility = View.VISIBLE
@@ -965,7 +968,12 @@ class MainActivity : Activity(), AudioEngine.Listener, LibraryView.Callbacks, Pl
         if (track == null || track.path.isBlank()) {
             lastLoadedTrackPath = null
             lastDisplayCover = null
-            applyPaletteAndBackdrop(CoverPaletteExtractor.defaultPalette(), null, null)
+            applyPaletteAndBackdrop(
+                CoverPaletteExtractor.defaultPalette(),
+                null,
+                null,
+                NowPlayingView.AmbientMeshMath.defaultMeshPalette()
+            )
             nowPlayingView.setLyrics(LrcParser.parse(""))
             nowPlayingView.setWaveform(null)
             return
@@ -989,10 +997,16 @@ class MainActivity : Activity(), AudioEngine.Listener, LibraryView.Callbacks, Pl
 
             val microBitmap = StackBlur.decodeMicroCover(artBytes, targetSize = 64)
             val blurredBackdrop = microBitmap?.let { StackBlur.createBlurredBackdrop(it, radius = 12) }
-            val palette = if (microBitmap != null) {
-                CoverPaletteExtractor.extract(microBitmap)
+            val palette: CoverPalette
+            val meshPalette: NowPlayingView.AmbientMeshMath.MeshPalette
+            if (microBitmap != null) {
+                palette = CoverPaletteExtractor.extract(microBitmap)
+                val microPixels = IntArray(microBitmap.width * microBitmap.height)
+                microBitmap.getPixels(microPixels, 0, microBitmap.width, 0, 0, microBitmap.width, microBitmap.height)
+                meshPalette = NowPlayingView.AmbientMeshMath.extractMeshPaletteFromPixels(microPixels)
             } else {
-                CoverPaletteExtractor.defaultPalette()
+                palette = CoverPaletteExtractor.defaultPalette()
+                meshPalette = NowPlayingView.AmbientMeshMath.defaultMeshPalette()
             }
             val displayCover = if (artBytes != null) {
                 StackBlur.decodeMicroCover(artBytes, targetSize = 512)
@@ -1013,7 +1027,7 @@ class MainActivity : Activity(), AudioEngine.Listener, LibraryView.Callbacks, Pl
                 lastDisplayCover = displayCover
                 nowPlayingView.setLyrics(parsedLyrics)
                 nowPlayingView.setWaveform(waveform)
-                applyPaletteAndBackdrop(palette, blurredBackdrop, displayCover)
+                applyPaletteAndBackdrop(palette, blurredBackdrop, displayCover, meshPalette)
                 libraryView.updateMiniPlayer(track, audioEngine?.isPlaying() == true, displayCover)
             }
         }
@@ -1022,7 +1036,8 @@ class MainActivity : Activity(), AudioEngine.Listener, LibraryView.Callbacks, Pl
     private fun applyPaletteAndBackdrop(
         palette: CoverPalette,
         blurredBackdrop: Bitmap?,
-        displayCover: Bitmap?
+        displayCover: Bitmap?,
+        meshPalette: NowPlayingView.AmbientMeshMath.MeshPalette = NowPlayingView.AmbientMeshMath.fromCoverPalette(palette)
     ) {
         val previousBackdropColor = currentPalette.deepBackdrop
         currentPalette = palette
@@ -1037,6 +1052,7 @@ class MainActivity : Activity(), AudioEngine.Listener, LibraryView.Callbacks, Pl
             SpringAnimatorHelper.crossfadeBackdrop(incoming, outgoing, blurredBackdrop)
         }
         nowPlayingView.setPalette(palette)
+        nowPlayingView.setAmbientMeshPalette(meshPalette)
         nowPlayingView.setCoverArtwork(displayCover)
         libraryView.setPalette(palette)
         audioLabSheet.setPalette(palette)

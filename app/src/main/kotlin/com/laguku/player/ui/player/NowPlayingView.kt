@@ -11,6 +11,7 @@ import android.graphics.Outline
 import android.graphics.Paint
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffXfermode
+import android.graphics.RadialGradient
 import android.graphics.Shader
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -18,8 +19,10 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.provider.Settings
 import android.text.TextUtils
 import android.util.TypedValue
+import android.view.Choreographer
 import android.view.GestureDetector
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
@@ -52,8 +55,15 @@ import com.laguku.player.ui.glass.CoverPaletteExtractor
 import com.laguku.player.ui.glass.InteractiveGlassScrubView
 import com.laguku.player.ui.glass.LiquidGlassDrawable
 import com.laguku.player.ui.motion.SpringAnimatorHelper
+import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.ceil
+import kotlin.math.cos
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.pow
+import kotlin.math.roundToInt
+import kotlin.math.sin
 
 /**
  * Full Now Playing screen following the Bottom-Half Thumb-Zone Layout & Progressive Disclosure:
@@ -304,6 +314,265 @@ class NowPlayingView(
         }
     }
 
+    object AmbientMeshMath {
+        const val MESH_CYCLE_SECONDS = 20f
+        const val MIN_TEXT_CONTRAST_RATIO = 7.0
+        private const val TWO_PI = (2.0 * PI).toFloat()
+
+        data class MeshPalette(
+            val baseColor: Int,
+            val primaryBlob: Int,
+            val secondaryBlob: Int,
+            val tertiaryBlob: Int,
+            val averageLuminance: Float
+        )
+
+        fun defaultMeshPalette(): MeshPalette {
+            return MeshPalette(
+                baseColor = 0xFF080A10.toInt(),
+                primaryBlob = 0xFF1A2A44.toInt(),
+                secondaryBlob = 0xFF14353D.toInt(),
+                tertiaryBlob = 0xFF241E3A.toInt(),
+                averageLuminance = 0.04f
+            )
+        }
+
+        fun fromCoverPalette(palette: CoverPalette): MeshPalette {
+            val lum = max(
+                computeRelativeLuminance(palette.deepBackdrop),
+                computeRelativeLuminance(palette.glassTint)
+            ).toFloat().coerceIn(0f, 1f)
+            return MeshPalette(
+                baseColor = palette.deepBackdrop,
+                primaryBlob = palette.glassTint,
+                secondaryBlob = darkenColor(palette.accentGlow, 0.34f),
+                tertiaryBlob = blendColors(palette.deepBackdrop, palette.accentGlow, 0.22f),
+                averageLuminance = lum
+            )
+        }
+
+        fun extractMeshPaletteFromPixels(pixels: IntArray): MeshPalette {
+            if (pixels.isEmpty()) return defaultMeshPalette()
+            val counts = IntArray(4096)
+            val sumR = LongArray(4096)
+            val sumG = LongArray(4096)
+            val sumB = LongArray(4096)
+
+            var validCount = 0
+            var lumSum = 0.0
+            for (px in pixels) {
+                val a = (px ushr 24) and 0xFF
+                if (a < 128) continue
+                val r = (px ushr 16) and 0xFF
+                val g = (px ushr 8) and 0xFF
+                val b = px and 0xFF
+                val bin = ((r ushr 4) shl 8) or ((g ushr 4) shl 4) or (b ushr 4)
+                counts[bin]++
+                sumR[bin] += r.toLong()
+                sumG[bin] += g.toLong()
+                sumB[bin] += b.toLong()
+                lumSum += (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255.0
+                validCount++
+            }
+            if (validCount == 0) return defaultMeshPalette()
+
+            val avgLum = (lumSum / validCount).toFloat().coerceIn(0f, 1f)
+            val pickedColors = IntArray(3)
+            val pickedScores = FloatArray(3) { -1f }
+
+            for (slot in 0 until 3) {
+                var bestScore = -1f
+                var bestColor = 0
+                for (bin in 0 until 4096) {
+                    val count = counts[bin]
+                    if (count == 0) continue
+                    val r = (sumR[bin] / count).toInt().coerceIn(0, 255)
+                    val g = (sumG[bin] / count).toInt().coerceIn(0, 255)
+                    val b = (sumB[bin] / count).toInt().coerceIn(0, 255)
+                    val color = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+
+                    val maxC = max(r, max(g, b))
+                    val minC = min(r, min(g, b))
+                    val chromaWeight = 0.45f + ((maxC - minC) / 255f) * 1.8f
+                    val score = count.toFloat() * chromaWeight
+                    if (score <= bestScore) continue
+
+                    var tooClose = false
+                    for (prev in 0 until slot) {
+                        if (pickedScores[prev] >= 0f && colorDistanceSq(color, pickedColors[prev]) < 52 * 52) {
+                            tooClose = true
+                            break
+                        }
+                    }
+                    if (!tooClose) {
+                        bestScore = score
+                        bestColor = color
+                    }
+                }
+                if (bestScore > 0f) {
+                    pickedColors[slot] = bestColor
+                    pickedScores[slot] = bestScore
+                }
+            }
+
+            val defaults = defaultMeshPalette()
+            if (pickedScores[0] <= 0f) return defaults.copy(averageLuminance = avgLum)
+
+            val c1 = pickedColors[0]
+            val c2 = if (pickedScores[1] > 0f) pickedColors[1] else blendColors(c1, defaults.secondaryBlob, 0.45f)
+            val c3 = if (pickedScores[2] > 0f) pickedColors[2] else blendColors(c1, defaults.tertiaryBlob, 0.55f)
+            val base = darkenColor(c1, 0.22f)
+
+            return MeshPalette(
+                baseColor = base,
+                primaryBlob = c1,
+                secondaryBlob = c2,
+                tertiaryBlob = c3,
+                averageLuminance = avgLum
+            )
+        }
+
+        fun computeBlobCenterAndRadius(
+            blobIndex: Int,
+            phaseRad: Float,
+            width: Float,
+            height: Float,
+            outTransform: FloatArray
+        ) {
+            val dim = max(width, height).coerceAtLeast(1f)
+            val p = ((phaseRad % TWO_PI) + TWO_PI) % TWO_PI
+            when (blobIndex) {
+                0 -> {
+                    outTransform[0] = width * (0.28f + 0.16f * cos(p))
+                    outTransform[1] = height * (0.24f + 0.14f * sin(p))
+                    outTransform[2] = dim * (0.68f + 0.05f * sin(p))
+                }
+                1 -> {
+                    outTransform[0] = width * (0.74f + 0.16f * sin(p + 2.1f))
+                    outTransform[1] = height * (0.48f + 0.16f * cos(p + 1.1f))
+                    outTransform[2] = dim * (0.62f + 0.05f * cos(p))
+                }
+                else -> {
+                    outTransform[0] = width * (0.46f + 0.18f * cos(p + 4.2f))
+                    outTransform[1] = height * (0.78f + 0.14f * sin(p + 3.4f))
+                    outTransform[2] = dim * (0.64f + 0.05f * sin(p * 2f))
+                }
+            }
+        }
+
+        fun computeRelativeLuminance(argb: Int): Double {
+            fun linearize(channel: Int): Double {
+                val c = (channel and 0xFF) / 255.0
+                return if (c <= 0.03928) c / 12.92 else ((c + 0.055) / 1.055).pow(2.4)
+            }
+            val r = linearize((argb ushr 16) and 0xFF)
+            val g = linearize((argb ushr 8) and 0xFF)
+            val b = linearize(argb and 0xFF)
+            return 0.2126 * r + 0.7152 * g + 0.0722 * b
+        }
+
+        fun computeContrastRatio(fgArgb: Int, bgArgb: Int): Double {
+            val l1 = computeRelativeLuminance(fgArgb)
+            val l2 = computeRelativeLuminance(bgArgb)
+            val lighter = max(l1, l2)
+            val darker = min(l1, l2)
+            return (lighter + 0.05) / (darker + 0.05)
+        }
+
+        fun blendColorOverBlack(colorArgb: Int, blackVeilAlpha: Float): Int {
+            val keep = (1f - blackVeilAlpha.coerceIn(0f, 1f))
+            val r = (((colorArgb ushr 16) and 0xFF) * keep).roundToInt().coerceIn(0, 255)
+            val g = (((colorArgb ushr 8) and 0xFF) * keep).roundToInt().coerceIn(0, 255)
+            val b = ((colorArgb and 0xFF) * keep).roundToInt().coerceIn(0, 255)
+            return (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+        }
+
+        fun computeAdaptiveVeilAlpha(
+            averageLuminance: Float,
+            primaryBlob: Int,
+            secondaryBlob: Int,
+            tertiaryBlob: Int
+        ): Float {
+            val peakChannel = max(
+                (averageLuminance.coerceIn(0f, 1f) * 255f).roundToInt(),
+                max(maxChannel(primaryBlob), max(maxChannel(secondaryBlob), maxChannel(tertiaryBlob)))
+            )
+            var peakColor = when {
+                maxChannel(primaryBlob) >= peakChannel -> primaryBlob
+                maxChannel(secondaryBlob) >= peakChannel -> secondaryBlob
+                maxChannel(tertiaryBlob) >= peakChannel -> tertiaryBlob
+                else -> (0xFF shl 24) or (peakChannel shl 16) or (peakChannel shl 8) or peakChannel
+            }
+            val lumChannel = (averageLuminance.coerceIn(0f, 1f) * 255f).roundToInt().coerceIn(0, 255)
+            val avgGray = (0xFF shl 24) or (lumChannel shl 16) or (lumChannel shl 8) or lumChannel
+            if (computeRelativeLuminance(avgGray) > computeRelativeLuminance(peakColor)) {
+                peakColor = avgGray
+            }
+
+            var alpha = (0.28f + averageLuminance.coerceIn(0f, 1f) * 0.42f).coerceIn(0.28f, 0.78f)
+            while (alpha < 0.85f &&
+                computeContrastRatio(0xFFFFFFFF.toInt(), blendColorOverBlack(peakColor, alpha)) < MIN_TEXT_CONTRAST_RATIO
+            ) {
+                alpha = (alpha + 0.02f).coerceAtMost(0.85f)
+            }
+            return alpha
+        }
+
+        fun shouldAnimateAmbient(
+            isPlaying: Boolean,
+            isPlayerVisible: Boolean,
+            isHostActive: Boolean,
+            amoledEnabled: Boolean,
+            animatorDurationScale: Float
+        ): Boolean {
+            return isPlaying && isPlayerVisible && isHostActive && !amoledEnabled && animatorDurationScale > 0f
+        }
+
+        fun shouldAnimateWordSweep(
+            isPlaying: Boolean,
+            isPlayerVisible: Boolean,
+            isHostActive: Boolean,
+            mode: DisplayMode,
+            synced: Boolean,
+            animatorDurationScale: Float
+        ): Boolean {
+            return isPlaying &&
+                isPlayerVisible &&
+                isHostActive &&
+                mode == DisplayMode.LYRICS_FOCUS &&
+                synced &&
+                LyricMotionSpec.WORD_SWEEP_ENABLED &&
+                animatorDurationScale > 0f
+        }
+
+        private fun maxChannel(argb: Int): Int {
+            return max((argb ushr 16) and 0xFF, max((argb ushr 8) and 0xFF, argb and 0xFF))
+        }
+
+        private fun colorDistanceSq(a: Int, b: Int): Int {
+            val dr = ((a ushr 16) and 0xFF) - ((b ushr 16) and 0xFF)
+            val dg = ((a ushr 8) and 0xFF) - ((b ushr 8) and 0xFF)
+            val db = (a and 0xFF) - (b and 0xFF)
+            return dr * dr + dg * dg + db * db
+        }
+
+        private fun darkenColor(argb: Int, factor: Float): Int {
+            val r = (((argb ushr 16) and 0xFF) * factor).roundToInt().coerceIn(0, 255)
+            val g = (((argb ushr 8) and 0xFF) * factor).roundToInt().coerceIn(0, 255)
+            val b = ((argb and 0xFF) * factor).roundToInt().coerceIn(0, 255)
+            return (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+        }
+
+        private fun blendColors(c1: Int, c2: Int, ratio: Float): Int {
+            val t = ratio.coerceIn(0f, 1f)
+            val inv = 1f - t
+            val r = (((c1 ushr 16) and 0xFF) * inv + ((c2 ushr 16) and 0xFF) * t).roundToInt().coerceIn(0, 255)
+            val g = (((c1 ushr 8) and 0xFF) * inv + ((c2 ushr 8) and 0xFF) * t).roundToInt().coerceIn(0, 255)
+            val b = ((c1 and 0xFF) * inv + (c2 and 0xFF) * t).roundToInt().coerceIn(0, 255)
+            return (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+        }
+    }
+
     var onOpenAudioLab: (() -> Unit)? = null
     var onToggleAmoled: (() -> Unit)? = null
     var onSaveLyricOffset: ((Track, Long) -> Unit)? = null
@@ -343,6 +612,8 @@ class NowPlayingView(
     private var amoledProgress: Float = 0f
     private var zenModeActive: Boolean = false
     private var hostActive: Boolean = true
+    private var playerVisible: Boolean = false
+    private var isPlayingState: Boolean = false
     private var pendingTrackDirection: Int = 0
     private var lastAnimatedTrackPath: String? = null
 
@@ -361,6 +632,7 @@ class NowPlayingView(
     private val morphLocB = IntArray(2)
     private var activeMorphPreDrawListener: ViewTreeObserver.OnPreDrawListener? = null
 
+    private val ambientMeshView = AmbientMeshBackdropView(context)
     private val contentColumn = LinearLayout(context)
 
     // Top 50% Display-Only Area
@@ -560,9 +832,6 @@ class NowPlayingView(
     fun setHostActive(active: Boolean) {
         hostActive = active
         vinylDiscView.setHostActive(active)
-        if (::lyricsAdapter.isInitialized) {
-            lyricsAdapter.setHostActive(active)
-        }
         if (!active) {
             mainHandler.removeCallbacks(playDwellRunnable)
             modeScrubPill.cancelActiveInteractions()
@@ -576,7 +845,56 @@ class NowPlayingView(
             nextButton.scaleX = 1f
             nextButton.scaleY = 1f
         }
+        syncAnimationLifecycleGates()
         onVisualizerDemandChanged?.invoke(isVisualizerDemanded())
+    }
+
+    fun setPlayerVisible(visible: Boolean) {
+        if (playerVisible == visible) return
+        playerVisible = visible
+        syncAnimationLifecycleGates()
+        onVisualizerDemandChanged?.invoke(isVisualizerDemanded())
+    }
+
+    fun setAmbientMeshPalette(meshPalette: AmbientMeshMath.MeshPalette) {
+        ambientMeshView.setMeshPalette(meshPalette)
+    }
+
+    private fun readAnimatorDurationScale(): Float {
+        return runCatching {
+            Settings.Global.getFloat(
+                context.contentResolver,
+                Settings.Global.ANIMATOR_DURATION_SCALE,
+                1.0f
+            )
+        }.getOrDefault(1.0f)
+    }
+
+    private fun syncAnimationLifecycleGates() {
+        val attached = isAttachedToWindow
+        val durationScale = readAnimatorDurationScale()
+        val meshActive = AmbientMeshMath.shouldAnimateAmbient(
+            isPlaying = isPlayingState,
+            isPlayerVisible = playerVisible,
+            isHostActive = hostActive && attached,
+            amoledEnabled = amoledEnabled,
+            animatorDurationScale = durationScale
+        )
+        ambientMeshView.setAnimationActive(meshActive)
+
+        if (::lyricsAdapter.isInitialized) {
+            lyricsAdapter.setHostActive(hostActive && attached && durationScale > 0f)
+            val sweepActive = AmbientMeshMath.shouldAnimateWordSweep(
+                isPlaying = isPlayingState,
+                isPlayerVisible = playerVisible,
+                isHostActive = hostActive && attached,
+                mode = displayMode,
+                synced = parsedLyrics.isSynced,
+                animatorDurationScale = durationScale
+            )
+            lyricsAdapter.setPlaybackActive(sweepActive)
+            lyricsAdapter.setLyricsModeActive(displayMode == DisplayMode.LYRICS_FOCUS && playerVisible)
+        }
     }
 
     fun isVisualizerDemanded(): Boolean = hostActive && displayMode == DisplayMode.VINYL_DISC
@@ -649,11 +967,13 @@ class NowPlayingView(
                 onUpdate = { p -> applyAmoledProgressToGlass(p) }
             )
         }
+        syncAnimationLifecycleGates()
         updateSecondaryPillStates()
     }
 
     private fun applyAmoledProgressToGlass(progress: Float) {
         amoledProgress = progress.coerceIn(0f, 1f)
+        ambientMeshView.setAmoledProgress(amoledProgress)
         qualityBadgeGlass.setAmoledProgress(amoledProgress)
         returnPillGlass.setAmoledProgress(amoledProgress)
         lyricTunerToggleGlass.setAmoledProgress(amoledProgress)
@@ -759,6 +1079,7 @@ class NowPlayingView(
 
         val currentPos = audioEngine?.getCurrentPositionMs() ?: 0L
         updateActiveLyricForPosition(currentPos, forceScroll = true)
+        syncAnimationLifecycleGates()
 
         if (parsed.lines.isNotEmpty() && lyricsRecycler.height > 0) {
             applyLyricsViewportPadding(lyricsRecycler.height)
@@ -904,9 +1225,10 @@ class NowPlayingView(
     }
 
     fun onPlaybackStateChanged(isPlaying: Boolean) {
+        isPlayingState = isPlaying
         playPauseButton.setImageResource(if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
         vinylDiscView.setPlaying(isPlaying)
-        lyricsAdapter.setPlaybackActive(isPlaying)
+        syncAnimationLifecycleGates()
     }
 
     fun onPositionUpdated(positionMs: Long, durationMs: Long) {
@@ -947,10 +1269,17 @@ class NowPlayingView(
         }
     }
 
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        syncAnimationLifecycleGates()
+    }
+
     override fun onDetachedFromWindow() {
         mainHandler.removeCallbacks(autoResumeRunnable)
         mainHandler.removeCallbacks(playDwellRunnable)
         mainHandler.removeCallbacks(sleepDisplayTicker)
+        ambientMeshView.setAnimationActive(false)
+        lyricsAdapter.setHostActive(false)
         lyricsAdapter.cancelScrollAnimation(lyricsRecycler)
         clearPendingMorphPreDraw()
         SpringAnimatorHelper.cancelSpring(this, CHANNEL_CHROME_MORPH)
@@ -963,6 +1292,8 @@ class NowPlayingView(
     }
 
     private fun buildUi() {
+        addView(ambientMeshView, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+
         contentColumn.orientation = LinearLayout.VERTICAL
         contentColumn.clipChildren = false
         contentColumn.clipToPadding = false
@@ -2445,6 +2776,7 @@ class NowPlayingView(
                 }
             }
         }
+        syncAnimationLifecycleGates()
         onVisualizerDemandChanged?.invoke(isVisualizerDemanded())
         updateSecondaryPillStates()
     }
@@ -2570,6 +2902,7 @@ class NowPlayingView(
     }
 
     private fun applyPalette(newPalette: CoverPalette) {
+        ambientMeshView.setMeshPalette(AmbientMeshMath.fromCoverPalette(newPalette))
         qualityBadgeGlass.setPalette(newPalette)
         vinylDiscView.setPalette(newPalette)
         returnPillGlass.setPalette(newPalette)
@@ -2946,6 +3279,146 @@ class NowPlayingView(
 
         private companion object {
             val TYPEFACE_MEDIUM: Typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+        }
+    }
+
+    private class AmbientMeshBackdropView(context: Context) : View(context) {
+        private var meshPalette = AmbientMeshMath.defaultMeshPalette()
+        private var veilAlpha: Float = AmbientMeshMath.computeAdaptiveVeilAlpha(
+            meshPalette.averageLuminance,
+            meshPalette.primaryBlob,
+            meshPalette.secondaryBlob,
+            meshPalette.tertiaryBlob
+        )
+        private var amoledProgress: Float = 0f
+        private var animationActive: Boolean = false
+        private var choreographerRunning: Boolean = false
+        private var phaseRad: Float = 0f
+        private var lastFrameNanos: Long = 0L
+
+        private val basePaint = Paint()
+        private val blobPaints = Array(3) { Paint(Paint.ANTI_ALIAS_FLAG).apply { isDither = true } }
+        private val blobShaders = arrayOfNulls<RadialGradient>(3)
+        private val blobMatrices = Array(3) { Matrix() }
+        private val blobTransformScratch = FloatArray(3)
+        private val veilPaint = Paint().apply { color = 0xFF000000.toInt() }
+        private val amoledPaint = Paint().apply { color = 0xFF000000.toInt() }
+
+        private val frameCallback = object : Choreographer.FrameCallback {
+            override fun doFrame(frameTimeNanos: Long) {
+                if (!animationActive) {
+                    choreographerRunning = false
+                    lastFrameNanos = 0L
+                    return
+                }
+                val dtSec = if (lastFrameNanos == 0L) {
+                    1f / 60f
+                } else {
+                    ((frameTimeNanos - lastFrameNanos).coerceIn(1_000_000L, 48_000_000L)) / 1_000_000_000f
+                }
+                lastFrameNanos = frameTimeNanos
+                val twoPi = (2.0 * PI).toFloat()
+                phaseRad = (phaseRad + dtSec * (twoPi / AmbientMeshMath.MESH_CYCLE_SECONDS)) % twoPi
+                invalidate()
+                if (animationActive) {
+                    Choreographer.getInstance().postFrameCallback(this)
+                } else {
+                    choreographerRunning = false
+                    lastFrameNanos = 0L
+                }
+            }
+        }
+
+        init {
+            setMeshPalette(meshPalette)
+        }
+
+        fun setMeshPalette(palette: AmbientMeshMath.MeshPalette) {
+            meshPalette = palette
+            basePaint.color = palette.baseColor
+            veilAlpha = AmbientMeshMath.computeAdaptiveVeilAlpha(
+                palette.averageLuminance,
+                palette.primaryBlob,
+                palette.secondaryBlob,
+                palette.tertiaryBlob
+            )
+            rebuildBlobShader(0, palette.primaryBlob, 0xCC)
+            rebuildBlobShader(1, palette.secondaryBlob, 0xB8)
+            rebuildBlobShader(2, palette.tertiaryBlob, 0xA8)
+            invalidate()
+        }
+
+        private fun rebuildBlobShader(idx: Int, rgbColor: Int, centerAlpha: Int) {
+            val cCenter = ((centerAlpha.coerceIn(0, 255)) shl 24) or (rgbColor and 0x00FFFFFF)
+            val cMid = (((centerAlpha * 0.45f).toInt().coerceIn(0, 255)) shl 24) or (rgbColor and 0x00FFFFFF)
+            val cEdge = rgbColor and 0x00FFFFFF
+            val gradient = RadialGradient(
+                0f,
+                0f,
+                1f,
+                intArrayOf(cCenter, cMid, cEdge),
+                floatArrayOf(0f, 0.52f, 1f),
+                Shader.TileMode.CLAMP
+            )
+            blobShaders[idx] = gradient
+            blobPaints[idx].shader = gradient
+        }
+
+        fun setAmoledProgress(progress: Float) {
+            val clamped = progress.coerceIn(0f, 1f)
+            if (amoledProgress == clamped) return
+            amoledProgress = clamped
+            invalidate()
+        }
+
+        fun setAnimationActive(active: Boolean) {
+            if (animationActive == active) return
+            animationActive = active
+            if (active && !choreographerRunning) {
+                choreographerRunning = true
+                lastFrameNanos = 0L
+                Choreographer.getInstance().postFrameCallback(frameCallback)
+            } else if (!active && choreographerRunning) {
+                runCatching { Choreographer.getInstance().removeFrameCallback(frameCallback) }
+                choreographerRunning = false
+                lastFrameNanos = 0L
+            }
+        }
+
+        override fun onDetachedFromWindow() {
+            setAnimationActive(false)
+            super.onDetachedFromWindow()
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            val w = width.toFloat()
+            val h = height.toFloat()
+            if (w <= 0f || h <= 0f) return
+            if (amoledProgress >= 0.999f) {
+                canvas.drawColor(0xFF000000.toInt())
+                return
+            }
+
+            canvas.drawRect(0f, 0f, w, h, basePaint)
+            for (i in 0 until 3) {
+                val shader = blobShaders[i] ?: continue
+                AmbientMeshMath.computeBlobCenterAndRadius(i, phaseRad, w, h, blobTransformScratch)
+                val cx = blobTransformScratch[0]
+                val cy = blobTransformScratch[1]
+                val radius = blobTransformScratch[2]
+                blobMatrices[i].setScale(radius, radius)
+                blobMatrices[i].postTranslate(cx, cy)
+                shader.setLocalMatrix(blobMatrices[i])
+                canvas.drawCircle(cx, cy, radius, blobPaints[i])
+            }
+
+            veilPaint.alpha = (veilAlpha * 255f).roundToInt().coerceIn(0, 255)
+            canvas.drawRect(0f, 0f, w, h, veilPaint)
+
+            if (amoledProgress > 0.002f) {
+                amoledPaint.alpha = (amoledProgress * 255f).roundToInt().coerceIn(0, 255)
+                canvas.drawRect(0f, 0f, w, h, amoledPaint)
+            }
         }
     }
 
