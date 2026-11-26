@@ -161,16 +161,16 @@ class LibraryView(
     private val shuffleAllPill = LinearLayout(context)
     private val shuffleAllIcon = ImageView(context)
     private val shuffleAllText = TextView(context)
-    private val shuffleAllGlass = LiquidGlassDrawable(context, 18f)
+    private val shuffleAllGlass = LiquidGlassDrawable(context, 24f)
 
     private val searchTogglePill = LinearLayout(context)
     private val searchToggleIcon = ImageView(context)
     private val searchToggleText = TextView(context)
-    private val searchToggleGlass = LiquidGlassDrawable(context, 18f)
+    private val searchToggleGlass = LiquidGlassDrawable(context, 24f)
 
     private val utilitiesPill = LinearLayout(context)
     private val utilitiesIcon = ImageView(context)
-    private val utilitiesGlass = LiquidGlassDrawable(context, 18f)
+    private val utilitiesGlass = LiquidGlassDrawable(context, 24f)
 
     private val playlistActionsRow = LinearLayout(context)
     private val importBtn = TextView(context)
@@ -376,7 +376,11 @@ class LibraryView(
         mainColumn.addView(listContainer, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, 0, 1f))
 
         // 3. Bottom Dock (Thumb-Zone)
-        bottomDock.orientation = LinearLayout.VERTICAL
+        bottomDock.apply {
+            orientation = LinearLayout.VERTICAL
+            background = null
+            elevation = 0f
+        }
         mainColumn.addView(bottomDock, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
 
         // 3a. Floating Mini Player locked directly above bottom action/nav area
@@ -458,8 +462,20 @@ class LibraryView(
     }
 
     private fun buildQuickActionRow() {
-        quickActionRow.orientation = LinearLayout.HORIZONTAL
-        quickActionRow.gravity = Gravity.CENTER_VERTICAL
+        val pillOutlineProvider = object : ViewOutlineProvider() {
+            override fun getOutline(view: View, outline: Outline) {
+                val radius = minOf(24f * density, view.height * 0.5f)
+                outline.setRoundRect(0, 0, view.width, view.height, radius)
+            }
+        }
+        quickActionRow.apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = null
+            elevation = 0f
+            clipChildren = false
+            clipToPadding = false
+        }
 
         drillBackBtn.apply {
             text = "\u2190 ${context.getString(R.string.back_to_list)}"
@@ -468,7 +484,10 @@ class LibraryView(
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             gravity = Gravity.CENTER
             minimumHeight = dp(48)
-            background = LiquidGlassDrawable(context, 18f, palette)
+            background = LiquidGlassDrawable(context, 24f, palette)
+            elevation = 0f
+            outlineProvider = pillOutlineProvider
+            clipToOutline = true
             setPadding(dp(14), dp(8), dp(14), dp(8))
             visibility = View.GONE
             SpringAnimatorHelper.attachPressFeedback(this)
@@ -484,6 +503,9 @@ class LibraryView(
             gravity = Gravity.CENTER
             minimumHeight = dp(48)
             background = shuffleAllGlass
+            elevation = 0f
+            outlineProvider = pillOutlineProvider
+            clipToOutline = true
             setPadding(dp(14), dp(8), dp(14), dp(8))
             SpringAnimatorHelper.attachPressFeedback(this)
             setOnClickListener {
@@ -514,6 +536,9 @@ class LibraryView(
             gravity = Gravity.CENTER
             minimumHeight = dp(48)
             background = searchToggleGlass
+            elevation = 0f
+            outlineProvider = pillOutlineProvider
+            clipToOutline = true
             setPadding(dp(14), dp(8), dp(14), dp(8))
             SpringAnimatorHelper.attachPressFeedback(this)
             setOnClickListener { toggleSearchBar() }
@@ -539,6 +564,9 @@ class LibraryView(
             minimumHeight = dp(48)
             minimumWidth = dp(48)
             background = utilitiesGlass
+            elevation = 0f
+            outlineProvider = pillOutlineProvider
+            clipToOutline = true
             contentDescription = context.getString(R.string.utilities_short)
             setPadding(dp(12), dp(8), dp(12), dp(8))
             SpringAnimatorHelper.attachPressFeedback(this)
@@ -611,7 +639,7 @@ class LibraryView(
     private fun buildMiniPlayer() {
         miniPlayerPill.apply {
             background = miniPlayerGlass
-            elevation = 10f * density
+            elevation = 0f
             visibility = View.GONE
             outlineProvider = object : ViewOutlineProvider() {
                 override fun getOutline(view: View, outline: Outline) {
@@ -630,7 +658,8 @@ class LibraryView(
         }
 
         miniCoverCard.apply {
-            background = LiquidGlassDrawable(context, 10f, palette)
+            background = null
+            elevation = 0f
             outlineProvider = object : ViewOutlineProvider() {
                 override fun getOutline(view: View, outline: Outline) {
                     outline.setRoundRect(0, 0, view.width, view.height, 10f * density)
