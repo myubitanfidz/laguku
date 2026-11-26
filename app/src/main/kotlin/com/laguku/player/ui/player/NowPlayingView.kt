@@ -257,7 +257,6 @@ class NowPlayingView(
     private val coverCard = FrameLayout(context)
     private val coverPlaceholder = ImageView(context)
     private val coverImage = ImageView(context)
-    private val coverGlass = LiquidGlassDrawable(context, 20f)
 
     private val vinylDiscView = VinylDiscVisualizerView(context)
 
@@ -524,7 +523,6 @@ class NowPlayingView(
     private fun applyAmoledProgressToGlass(progress: Float) {
         amoledProgress = progress.coerceIn(0f, 1f)
         qualityBadgeGlass.setAmoledProgress(amoledProgress)
-        coverGlass.setAmoledProgress(amoledProgress)
         returnPillGlass.setAmoledProgress(amoledProgress)
         lyricTunerToggleGlass.setAmoledProgress(amoledProgress)
         lyricTunerPanelGlass.setAmoledProgress(amoledProgress)
@@ -915,24 +913,46 @@ class NowPlayingView(
 
     @SuppressLint("ClickableViewAccessibility")
     private fun buildCenterStage() {
-        coverCard.apply {
-            background = coverGlass
-            elevation = 16f * density
-            outlineProvider = object : ViewOutlineProvider() {
-                override fun getOutline(view: View, outline: Outline) {
-                    outline.setRoundRect(0, 0, view.width, view.height, 20f * density)
-                }
+        val coverOutlineProvider = object : ViewOutlineProvider() {
+            override fun getOutline(view: View, outline: Outline) {
+                outline.setRoundRect(0, 0, view.width, view.height, 20f * density)
             }
-            clipToOutline = true
+        }
+        stageFrame.apply {
+            clipChildren = false
+            clipToPadding = false
+        }
+        coverContainer.apply {
+            background = null
+            elevation = 0f
+            setPadding(0, 0, 0, 0)
+            clipChildren = false
+            clipToPadding = false
+        }
+        coverCard.apply {
+            background = null
+            elevation = 0f
+            setPadding(0, 0, 0, 0)
+            clipChildren = false
+            clipToPadding = false
+            clipToOutline = false
         }
         coverPlaceholder.apply {
+            background = null
             setImageResource(R.drawable.ic_default_album_cover)
             imageTintList = null
             scaleType = ImageView.ScaleType.CENTER_CROP
             setPadding(0, 0, 0, 0)
+            outlineProvider = coverOutlineProvider
+            clipToOutline = true
+            elevation = 10f * density
         }
         coverImage.apply {
+            background = null
             scaleType = ImageView.ScaleType.CENTER_CROP
+            outlineProvider = coverOutlineProvider
+            clipToOutline = true
+            elevation = 10f * density
             visibility = View.GONE
         }
         coverCard.addView(coverPlaceholder, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
@@ -2087,7 +2107,6 @@ class NowPlayingView(
 
     private fun applyPalette(newPalette: CoverPalette) {
         qualityBadgeGlass.setPalette(newPalette)
-        coverGlass.setPalette(newPalette)
         vinylDiscView.setPalette(newPalette)
         returnPillGlass.setPalette(newPalette)
         returnPillGlass.setTintProfile(baseFraction = 0.65f, accentFraction = 0.25f, preferAccentGlow = true)
