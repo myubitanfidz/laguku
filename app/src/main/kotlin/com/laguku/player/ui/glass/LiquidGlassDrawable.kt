@@ -8,12 +8,16 @@ import android.graphics.Paint
 import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.graphics.RectF
+import android.graphics.RuntimeShader
 import android.graphics.Shader
 import android.graphics.drawable.Drawable
+import android.os.Build
 import android.provider.Settings
+import androidx.annotation.RequiresApi
 import com.laguku.player.model.CoverPalette
 import com.laguku.player.ui.motion.SpringAnimatorHelper
 import kotlin.math.abs
+import kotlin.math.hypot
 import kotlin.math.roundToInt
 
 /**
@@ -156,6 +160,108 @@ class LiquidGlassDrawable(
         }
     }
 
+    object BezelOpticsMath {
+        const val MIN_BEZEL_DP = 8f
+        const val MAX_BEZEL_DP = 20f
+        const val MAX_BEZEL_SIDE_FRACTION = 0.33f
+        const val MAX_DISPLACEMENT_RATIO = 0.6f
+        const val CENTER_WARP_ENABLED = false
+        const val MIN_DISPERSION = 0.02f
+        const val MAX_DISPERSION = 0.06f
+        const val SMALL_POLARITY_FLIP_THRESHOLD = 0.58f
+        const val SHADOW_ALPHA_PLAIN = 0.08f
+        const val SHADOW_ALPHA_DENSE_TEXT = 0.22f
+
+        fun computeRoundedRectSdf(
+            px: Float,
+            py: Float,
+            halfW: Float,
+            halfH: Float,
+            radius: Float
+        ): Float {
+            val hw = halfW.coerceAtLeast(0f)
+            val hh = halfH.coerceAtLeast(0f)
+            val r = radius.coerceIn(0f, minOf(hw, hh))
+            val qx = abs(px) - (hw - r)
+            val qy = abs(py) - (hh - r)
+            val outDist = hypot(maxOf(qx, 0f), maxOf(qy, 0f))
+            val inDist = minOf(maxOf(qx, qy), 0f)
+            return outDist + inDist - r
+        }
+
+        fun computeBezelWidthPx(
+            widthPx: Float,
+            heightPx: Float,
+            radiusPx: Float,
+            density: Float
+        ): Float {
+            val safeDensity = density.coerceAtLeast(0.5f)
+            val minSide = minOf(widthPx, heightPx).coerceAtLeast(1f)
+            val raw = 0.5f * radiusPx.coerceAtLeast(0f)
+            val clampedDp = raw.coerceIn(MIN_BEZEL_DP * safeDensity, MAX_BEZEL_DP * safeDensity)
+            return clampedDp.coerceAtMost(minSide * MAX_BEZEL_SIDE_FRACTION).coerceAtLeast(1f)
+        }
+
+        fun computeBezelDisplacement(
+            insidePx: Float,
+            bezelWidthPx: Float,
+            materialization: Float = 1f
+        ): Float {
+            if (insidePx <= 0f || bezelWidthPx <= 0f || insidePx >= bezelWidthPx) return 0f
+            val t = (1f - insidePx / bezelWidthPx).coerceIn(0f, 1f)
+            val smooth = t * t * (3f - 2f * t)
+            val mat = materialization.coerceIn(0f, 1f)
+            return smooth * (MAX_DISPLACEMENT_RATIO * bezelWidthPx) * mat
+        }
+
+        fun computeChromaticOffsets(
+            baseShift: Float,
+            dispersion: Float = 0.04f
+        ): Triple<Float, Float, Float> {
+            val d = dispersion.coerceIn(MIN_DISPERSION, MAX_DISPERSION)
+            return Triple(baseShift * (1f + d), baseShift, baseShift * (1f - d))
+        }
+
+        fun resolvePolarityIsLight(
+            surfaceScale: GlassSurfaceScale,
+            backdropLuminance: Float,
+            defaultLightMode: Boolean
+        ): Boolean {
+            if (surfaceScale == GlassSurfaceScale.LARGE) return defaultLightMode
+            return backdropLuminance.coerceIn(0f, 1f) > SMALL_POLARITY_FLIP_THRESHOLD
+        }
+
+        fun computeRimLightAlphas(
+            isLightPolarity: Boolean,
+            materialization: Float = 1f
+        ): Triple<Float, Float, Float> {
+            val mat = materialization.coerceIn(0f, 1f)
+            return if (isLightPolarity) {
+                Triple(0.90f * mat, 0.16f * mat, 0.55f * mat)
+            } else {
+                Triple(0.32f * mat, 0.08f * mat, 0.22f * mat)
+            }
+        }
+
+        fun computeAdaptiveShadowAlpha(contentDensity: Float): Float {
+            val d = contentDensity.coerceIn(0f, 1f)
+            return SHADOW_ALPHA_PLAIN + (SHADOW_ALPHA_DENSE_TEXT - SHADOW_ALPHA_PLAIN) * d
+        }
+
+        fun computeAmbientShadowColor(
+            accentColor: Int,
+            shadowAlpha: Float,
+            bleedFraction: Float = 0.18f
+        ): Int {
+            val a = (shadowAlpha.coerceIn(0f, 1f) * 255f).roundToInt().coerceIn(0, 255)
+            val bleed = bleedFraction.coerceIn(0f, 0.45f)
+            val r = (((accentColor ushr 16) and 0xFF) * bleed).roundToInt().coerceIn(0, 255)
+            val g = (((accentColor ushr 8) and 0xFF) * bleed).roundToInt().coerceIn(0, 255)
+            val b = ((accentColor and 0xFF) * bleed).roundToInt().coerceIn(0, 255)
+            return (a shl 24) or (r shl 16) or (g shl 8) or b
+        }
+    }
+
     object OpticsMath {
         const val MAX_STRETCH_X = 1.12f
 
@@ -189,8 +295,11 @@ class LiquidGlassDrawable(
         cornerRadiusPx = cornerRadiusDp * context.resources.displayMetrics.density,
         rimWidthPx = 1.2f * context.resources.displayMetrics.density,
         initialPalette = initialPalette
-    )
+    ) {
+        density = context.resources.displayMetrics.density
+    }
 
+    private var density: Float = (rimWidthPx / 1.2f).coerceAtLeast(1f)
     private var palette: CoverPalette = initialPalette
     private var baseAlphaFraction: Float = 0.56f
     private var accentAlphaFraction: Float = 0.14f
@@ -206,6 +315,17 @@ class LiquidGlassDrawable(
     private var accessibilityFlags: AccessibilityFlags = AccessibilityFlags()
     private val defaultRimWidthPx: Float = rimWidthPx.coerceAtLeast(1f)
 
+    private var backdropLuminance: Float = 0.18f
+    private var contentDensity: Float = 0.35f
+    private var materializationProgress: Float = 1f
+    private var defaultLightMode: Boolean = false
+
+    private val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+    }
+    private val bezelLensingPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+    }
     private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
     }
@@ -222,8 +342,16 @@ class LiquidGlassDrawable(
         alpha = 0
     }
 
+    private val shadowRect = RectF()
     private val fillRect = RectF()
     private val rimRect = RectF()
+    private val rimStops = floatArrayOf(0f, 0.5f, 1f)
+    private val rimColors = IntArray(3)
+    private val agslBezelHelper: AgslBezelHelper? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        AgslBezelHelper()
+    } else {
+        null
+    }
 
     init {
         applyPaletteColors()
@@ -294,6 +422,34 @@ class LiquidGlassDrawable(
 
     fun getGlassVariant(): GlassVariant = glassVariant
 
+    fun setBackdropLuminance(luminance: Float) {
+        val clamped = luminance.coerceIn(0f, 1f)
+        if (abs(backdropLuminance - clamped) < 0.01f) return
+        backdropLuminance = clamped
+        applyPaletteColors()
+        rebuildShaders(bounds)
+        invalidateSelf()
+    }
+
+    fun setContentDensity(densityFraction: Float) {
+        val clamped = densityFraction.coerceIn(0f, 1f)
+        if (abs(contentDensity - clamped) < 0.01f) return
+        contentDensity = clamped
+        applyPaletteColors()
+        invalidateSelf()
+    }
+
+    fun setMaterializationProgress(progress: Float) {
+        val clamped = progress.coerceIn(0f, 1f)
+        if (abs(materializationProgress - clamped) < 0.005f) return
+        materializationProgress = clamped
+        applyPaletteColors()
+        rebuildShaders(bounds)
+        invalidateSelf()
+    }
+
+    fun getMaterializationProgress(): Float = materializationProgress
+
     fun setAmoledProgress(progress: Float) {
         val clamped = progress.coerceIn(0f, 1f)
         if (abs(amoledProgress - clamped) < 0.001f) return
@@ -341,6 +497,13 @@ class LiquidGlassDrawable(
     override fun onBoundsChange(bounds: Rect) {
         super.onBoundsChange(bounds)
         fillRect.set(bounds)
+        val shadowOffsetY = 1.5f * density
+        shadowRect.set(
+            bounds.left.toFloat(),
+            bounds.top + shadowOffsetY,
+            bounds.right.toFloat(),
+            bounds.bottom + shadowOffsetY
+        )
         val halfStroke = rimPaint.strokeWidth * 0.5f
         rimRect.set(
             bounds.left + halfStroke,
@@ -352,7 +515,7 @@ class LiquidGlassDrawable(
     }
 
     override fun draw(canvas: Canvas) {
-        if (fillRect.isEmpty) return
+        if (fillRect.isEmpty || materializationProgress <= 0.002f) return
         val maxRadius = minOf(fillRect.width(), fillRect.height()) * 0.5f
         val radius = cornerRadiusPx.coerceAtMost(maxRadius)
         val rimRadius = (radius - rimPaint.strokeWidth * 0.5f).coerceAtLeast(0f)
@@ -366,8 +529,23 @@ class LiquidGlassDrawable(
             0
         }
 
+        // Layer 4 back: Adaptive Color-Bleeding Shadow
+        if (!accessibilityFlags.increaseContrast && shadowPaint.alpha > 0) {
+            canvas.drawRoundRect(shadowRect, radius, radius, shadowPaint)
+        }
+
+        // Layer 2: Diffusion & Adaptive Polarity Luminosity Fill
         canvas.drawRoundRect(fillRect, radius, radius, fillPaint)
+
+        // Layer 1: Edge Rim Bezel Lensing (AGSL SDF + 4% chromatic dispersion on API 33+, bypassed when disabled)
+        if (LayerTokens.isRefractionAllowed(accessibilityFlags) && bezelLensingPaint.shader != null) {
+            canvas.drawRoundRect(fillRect, radius, radius, bezelLensingPaint)
+        }
+
+        // Layer 3: Specular Top Sheen
         canvas.drawRoundRect(fillRect, radius, radius, sheenPaint)
+
+        // Layer 4 front: 135-degree Directional Perimeter Rim Light
         canvas.drawRoundRect(rimRect, rimRadius, rimRadius, rimPaint)
         if (specularIntensity > 0.005f) {
             canvas.drawRoundRect(rimRect, rimRadius, rimRadius, specularPaint)
@@ -390,6 +568,8 @@ class LiquidGlassDrawable(
     }
 
     override fun setColorFilter(colorFilter: ColorFilter?) {
+        shadowPaint.colorFilter = colorFilter
+        bezelLensingPaint.colorFilter = colorFilter
         fillPaint.colorFilter = colorFilter
         sheenPaint.colorFilter = colorFilter
         rimPaint.colorFilter = colorFilter
@@ -401,7 +581,11 @@ class LiquidGlassDrawable(
     override fun getOpacity(): Int = PixelFormat.TRANSLUCENT
 
     private fun applyPaletteColors() {
-        val alphaScale = drawableAlpha / 255f
+        val mat = materializationProgress.coerceIn(0f, 1f)
+        val alphaScale = (drawableAlpha / 255f) * mat
+        val shadowAlpha = BezelOpticsMath.computeAdaptiveShadowAlpha(contentDensity) * alphaScale * (1f - 0.5f * amoledProgress)
+        shadowPaint.color = BezelOpticsMath.computeAmbientShadowColor(palette.accentGlow, shadowAlpha)
+
         if (accessibilityFlags.increaseContrast) {
             val baseFill = LayerTokens.HIGH_CONTRAST_DARK_FILL
             val a = (255f * alphaScale).roundToInt().coerceIn(0, 255)
@@ -417,6 +601,7 @@ class LiquidGlassDrawable(
             return
         }
 
+        val isLightPolarity = BezelOpticsMath.resolvePolarityIsLight(surfaceScale, backdropLuminance, defaultLightMode)
         val effectiveBase = if (glassVariant == GlassVariant.CLEAR) {
             0.10f
         } else {
@@ -437,9 +622,22 @@ class LiquidGlassDrawable(
         }
 
         val baseDarken = 1f - 0.55f * amoledProgress
-        val bR = (((palette.deepBackdrop ushr 16) and 0xFF) * baseDarken).roundToInt()
-        val bG = (((palette.deepBackdrop ushr 8) and 0xFF) * baseDarken).roundToInt()
-        val bB = ((palette.deepBackdrop and 0xFF) * baseDarken).roundToInt()
+        val polarityLiftedBase = if (isLightPolarity) 244f else 0f
+        val bR = if (isLightPolarity) {
+            ((polarityLiftedBase * 0.65f + ((palette.deepBackdrop ushr 16) and 0xFF) * 0.35f) * baseDarken).roundToInt()
+        } else {
+            (((palette.deepBackdrop ushr 16) and 0xFF) * baseDarken).roundToInt()
+        }
+        val bG = if (isLightPolarity) {
+            ((polarityLiftedBase * 0.65f + ((palette.deepBackdrop ushr 8) and 0xFF) * 0.35f) * baseDarken).roundToInt()
+        } else {
+            (((palette.deepBackdrop ushr 8) and 0xFF) * baseDarken).roundToInt()
+        }
+        val bB = if (isLightPolarity) {
+            ((polarityLiftedBase * 0.65f + (palette.deepBackdrop and 0xFF) * 0.35f) * baseDarken).roundToInt()
+        } else {
+            ((palette.deepBackdrop and 0xFF) * baseDarken).roundToInt()
+        }
 
         val tintSource = if (useAccentGlowAsTint) palette.accentGlow else palette.glassTint
         val tR = (tintSource ushr 16) and 0xFF
@@ -462,12 +660,14 @@ class LiquidGlassDrawable(
         val right = bounds.right.toFloat()
         val bottom = bounds.bottom.toFloat()
         val sheenBottom = top + bounds.height() * 0.45f
+        val mat = materializationProgress.coerceIn(0f, 1f)
 
-        val sheenTop = if (accessibilityFlags.increaseContrast || accessibilityFlags.reduceTransparency) {
-            0x00FFFFFF
+        val sheenTopAlpha = if (accessibilityFlags.increaseContrast || accessibilityFlags.reduceTransparency) {
+            0
         } else {
-            SHEEN_TOP_COLOR
+            (0x22 * mat).roundToInt().coerceIn(0, 255)
         }
+        val sheenTop = (sheenTopAlpha shl 24) or 0xFFFFFF
         sheenPaint.shader = LinearGradient(
             left,
             top,
@@ -478,23 +678,27 @@ class LiquidGlassDrawable(
             Shader.TileMode.CLAMP
         )
 
+        val isLightPolarity = BezelOpticsMath.resolvePolarityIsLight(surfaceScale, backdropLuminance, defaultLightMode)
         if (accessibilityFlags.increaseContrast) {
             rimPaint.shader = null
             rimPaint.color = LayerTokens.HIGH_CONTRAST_DARK_BORDER
         } else {
             val contrastFactor = SpringAnimatorHelper.AmoledTransitionMath.computeRimContrastFactor(amoledProgress)
-            val topLeftAlpha = (0x57 * contrastFactor).roundToInt().coerceIn(0, 255)
-            val bottomRightAlpha = (0x0D * (1f + amoledProgress)).roundToInt().coerceIn(0, 255)
-            val rimTopLeft = (topLeftAlpha shl 24) or 0xFFFFFF
-            val rimBottomRight = (bottomRightAlpha shl 24) or 0xFFFFFF
+            val (ul, mid, lr) = BezelOpticsMath.computeRimLightAlphas(isLightPolarity, mat)
+            val ulByte = (ul * 255f * contrastFactor).roundToInt().coerceIn(0, 255)
+            val midByte = (mid * 255f).roundToInt().coerceIn(0, 255)
+            val lrByte = (lr * 255f * (1f + 0.35f * amoledProgress)).roundToInt().coerceIn(0, 255)
+            rimColors[0] = (ulByte shl 24) or 0xFFFFFF
+            rimColors[1] = (midByte shl 24) or 0xFFFFFF
+            rimColors[2] = (lrByte shl 24) or 0xFFFFFF
 
             rimPaint.shader = LinearGradient(
                 left,
                 top,
                 right,
                 bottom,
-                rimTopLeft,
-                rimBottomRight,
+                rimColors,
+                rimStops,
                 Shader.TileMode.CLAMP
             )
         }
@@ -508,11 +712,108 @@ class LiquidGlassDrawable(
             SHEEN_BOTTOM_COLOR,
             Shader.TileMode.CLAMP
         )
-        specularPaint.alpha = (drawableAlpha * specularIntensity).roundToInt().coerceIn(0, 255)
+        specularPaint.alpha = (drawableAlpha * specularIntensity * mat).roundToInt().coerceIn(0, 255)
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && LayerTokens.isRefractionAllowed(accessibilityFlags)) {
+            val w = bounds.width().toFloat()
+            val h = bounds.height().toFloat()
+            val maxR = minOf(w, h) * 0.5f
+            val r = cornerRadiusPx.coerceAtMost(maxR)
+            val bezelW = BezelOpticsMath.computeBezelWidthPx(w, h, r, density)
+            bezelLensingPaint.shader = agslBezelHelper?.updateAndGetShader(
+                width = w,
+                height = h,
+                cornerRadius = r,
+                bezelWidth = bezelW,
+                materialization = mat,
+                dispersion = 0.04f,
+                accentColor = palette.accentGlow,
+                lightPolarity = if (isLightPolarity) 1f else 0f
+            )
+        } else {
+            bezelLensingPaint.shader = null
+        }
+    }
+
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+    private class AgslBezelHelper {
+        private val shader = RuntimeShader(AGSL_BEZEL_SHADER)
+
+        fun updateAndGetShader(
+            width: Float,
+            height: Float,
+            cornerRadius: Float,
+            bezelWidth: Float,
+            materialization: Float,
+            dispersion: Float,
+            accentColor: Int,
+            lightPolarity: Float
+        ): RuntimeShader {
+            shader.setFloatUniform("uResolution", width.coerceAtLeast(1f), height.coerceAtLeast(1f))
+            shader.setFloatUniform("uCornerRadius", cornerRadius.coerceAtLeast(0f))
+            shader.setFloatUniform("uBezelWidth", bezelWidth.coerceAtLeast(1f))
+            shader.setFloatUniform("uMaterialization", materialization.coerceIn(0f, 1f))
+            shader.setFloatUniform("uDispersion", dispersion.coerceIn(0.02f, 0.06f))
+            shader.setFloatUniform(
+                "uTintColor",
+                ((accentColor ushr 16) and 0xFF) / 255f,
+                ((accentColor ushr 8) and 0xFF) / 255f,
+                (accentColor and 0xFF) / 255f,
+                1f
+            )
+            shader.setFloatUniform("uLightPolarity", lightPolarity)
+            return shader
+        }
+
+        private companion object {
+            const val AGSL_BEZEL_SHADER = """
+                uniform float2 uResolution;
+                uniform float uCornerRadius;
+                uniform float uBezelWidth;
+                uniform float uMaterialization;
+                uniform float uDispersion;
+                uniform float4 uTintColor;
+                uniform float uLightPolarity;
+
+                half4 main(float2 fragCoord) {
+                    float2 halfSize = uResolution * 0.5;
+                    float2 p = fragCoord - halfSize;
+                    float r = min(uCornerRadius, min(halfSize.x, halfSize.y));
+                    float2 q = abs(p) - (halfSize - r);
+                    float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+                    float inside = max(-d, 0.0);
+
+                    // centerWarp = false: keep interior text crystal sharp
+                    if (inside <= 0.0 || inside >= uBezelWidth || uMaterialization <= 0.001) {
+                        return half4(0.0);
+                    }
+
+                    float t = clamp(1.0 - (inside / uBezelWidth), 0.0, 1.0);
+                    float m = t * t * (3.0 - 2.0 * t);
+
+                    // Surface normal approximation for 135-degree directional light
+                    float2 n = normalize(p / max(halfSize, float2(1.0)));
+                    float dir135 = clamp(dot(n, normalize(float2(-0.7071, -0.7071))) * 0.5 + 0.5, 0.0, 1.0);
+
+                    // Subtle chromatic dispersion across R/G/B rim channels (2%..6%)
+                    float rBand = clamp(m * (1.0 + uDispersion), 0.0, 1.0);
+                    float gBand = m;
+                    float bBand = clamp(m * (1.0 - uDispersion), 0.0, 1.0);
+
+                    float baseIntensity = mix(0.24, 0.36, uLightPolarity) * uMaterialization;
+                    float3 prism = float3(
+                        mix(uTintColor.r, 1.0, 0.68) * rBand,
+                        mix(uTintColor.g, 1.0, 0.72) * gBand,
+                        mix(uTintColor.b, 1.0, 0.78) * bBand
+                    );
+                    float alpha = clamp(m * baseIntensity * (0.45 + 0.55 * dir135), 0.0, 0.42);
+                    return half4(prism * alpha, alpha);
+                }
+            """
+        }
     }
 
     private companion object {
-        const val SHEEN_TOP_COLOR = 0x22FFFFFF
         const val SHEEN_BOTTOM_COLOR = 0x00FFFFFF
         const val SPECULAR_TOP_LEFT_COLOR = 0xCCFFFFFF.toInt()
     }
