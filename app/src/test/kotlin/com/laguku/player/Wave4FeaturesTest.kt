@@ -180,6 +180,47 @@ class Wave4FeaturesTest {
     }
 
     @Test
+    fun playLoupeController_locksIconAtZeroAndPreventsDoubleTriggerOnDwell() {
+        assertEquals(280L, NowPlayingView.PlayLoupeController.DWELL_DELAY_MS)
+        val controller = NowPlayingView.PlayLoupeController()
+        val thresholdPx = 132f
+        val maxOffsetPx = 180f
+
+        controller.onTouchDown()
+        assertEquals(0f, controller.iconTranslationX, 0.0001f)
+
+        // Drag into next zone
+        val drag = controller.onDragMove(thresholdPx + 20f, thresholdPx, maxOffsetPx, nowMs = 1_000L)
+        assertEquals(0f, controller.iconTranslationX, 0.0001f)
+        assertTrue(drag.loupeOffsetX > 0f)
+        assertEquals(1, drag.direction)
+        assertTrue(drag.thresholdCrossed)
+        assertTrue(drag.scheduleDwell)
+
+        // Before 280ms: dwell does not fire
+        assertEquals(0, controller.onDwellTimeout(1_279L))
+        assertFalse(controller.dwellTriggered)
+
+        // At 280ms: dwell fires once
+        assertEquals(1, controller.onDwellTimeout(1_280L))
+        assertTrue(controller.dwellTriggered)
+
+        // Subsequent release must NOT double-trigger
+        assertEquals(0, controller.onTouchUp(wasDragging = true, isCancel = false))
+        assertEquals(0f, controller.iconTranslationX, 0.0001f)
+
+        // Release before dwell fires once
+        controller.onTouchDown()
+        controller.onDragMove(-thresholdPx - 10f, thresholdPx, maxOffsetPx, nowMs = 2_000L)
+        assertEquals(-1, controller.onTouchUp(wasDragging = true, isCancel = false))
+
+        // Cancel never fires
+        controller.onTouchDown()
+        controller.onDragMove(thresholdPx + 10f, thresholdPx, maxOffsetPx, nowMs = 3_000L)
+        assertEquals(0, controller.onTouchUp(wasDragging = true, isCancel = true))
+    }
+
+    @Test
     fun waveformMath_normalizesAmplitudesAndGeneratesDeterministicFallback() {
         val normalized = WaveformPillSeekBarView.WaveformMath.normalizeAmplitudes(
             floatArrayOf(0f, 50f, 100f),

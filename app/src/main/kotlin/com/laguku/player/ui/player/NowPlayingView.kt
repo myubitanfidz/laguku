@@ -6,6 +6,7 @@ import android.content.res.ColorStateList
 import android.graphics.Bitmap
 import android.graphics.Outline
 import android.graphics.Typeface
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -90,6 +91,77 @@ class NowPlayingView(
         }
     }
 
+    class PlayLoupeController(val dwellDelayMs: Long = DWELL_DELAY_MS) {
+        companion object {
+            const val DWELL_DELAY_MS = 280L
+        }
+
+        data class DragUpdate(
+            val loupeOffsetX: Float,
+            val direction: Int,
+            val thresholdCrossed: Boolean,
+            val scheduleDwell: Boolean,
+            val cancelDwell: Boolean
+        )
+
+        val iconTranslationX: Float = 0f
+        var loupeTranslationX: Float = 0f
+            private set
+        var activeDirection: Int = 0
+            private set
+        var dwellTriggered: Boolean = false
+            private set
+        private var enteredZoneAtMs: Long = 0L
+
+        fun onTouchDown() {
+            loupeTranslationX = 0f
+            activeDirection = 0
+            dwellTriggered = false
+            enteredZoneAtMs = 0L
+        }
+
+        fun onDragMove(
+            rawDxPx: Float,
+            thresholdPx: Float,
+            maxOffsetPx: Float,
+            nowMs: Long
+        ): DragUpdate {
+            val offset = PlayDragMath.computeRubberBandOffset(rawDxPx, thresholdPx, maxOffsetPx)
+            val newDir = PlayDragMath.resolveDragDirection(rawDxPx, thresholdPx)
+            val prevDir = activeDirection
+            loupeTranslationX = offset
+            activeDirection = newDir
+
+            val thresholdCrossed = newDir != 0 && newDir != prevDir
+            val cancelDwell = newDir == 0 && prevDir != 0
+            val scheduleDwell = newDir != 0 && newDir != prevDir
+            if (scheduleDwell) {
+                enteredZoneAtMs = nowMs
+                dwellTriggered = false
+            } else if (newDir == 0) {
+                enteredZoneAtMs = 0L
+            }
+            return DragUpdate(offset, newDir, thresholdCrossed, scheduleDwell, cancelDwell)
+        }
+
+        fun onDwellTimeout(nowMs: Long): Int {
+            if (activeDirection == 0 || dwellTriggered) return 0
+            if (nowMs - enteredZoneAtMs < dwellDelayMs) return 0
+            dwellTriggered = true
+            return activeDirection
+        }
+
+        fun onTouchUp(wasDragging: Boolean, isCancel: Boolean): Int {
+            val triggerDir = if (!isCancel && wasDragging && activeDirection != 0 && !dwellTriggered) {
+                activeDirection
+            } else {
+                0
+            }
+            onTouchDown()
+            return triggerDir
+        }
+    }
+
     class LyricTunerState(initialExpanded: Boolean = false) {
         var isExpanded: Boolean = initialExpanded
             private set
@@ -160,8 +232,10 @@ class NowPlayingView(
 
     private var playDragDownRawX: Float = 0f
     private var playDragDownRawY: Float = 0f
+    private var lastPlayDragRawX: Float = 0f
+    private var lastPlayDragTimeMs: Long = 0L
     private var isPlayDragging: Boolean = false
-    private var playDragThresholdCrossed: Boolean = false
+    private val playLoupeController = PlayLoupeController()
     private val playDragThresholdPx: Float = PlayDragMath.DRAG_THRESHOLD_DP * density
     private val playDragMaxOffsetPx: Float = PlayDragMath.MAX_OFFSET_DP * density
 
@@ -242,7 +316,9 @@ class NowPlayingView(
     // Dock Row 2: WaveformPillSeekBarView
     private val seekWaveformView = WaveformPillSeekBarView(context)
 
-    // Dock Row 3: 5 Transport Controls
+    // Dock Row 3: 5 Transport Controls + Detached Play Glass Loupe
+    private val transportHost = FrameLayout(context)
+    private val playLoupeView = View(context)
     private val shuffleButton = ImageButton(context)
     private val prevButton = ImageButton(context)
     private val playPauseButton = ImageButton(context)
@@ -281,6 +357,20 @@ class NowPlayingView(
 
     private val autoResumeRunnable = Runnable {
         resumeLyricsAutoScroll(scrollNow = true)
+    }
+
+    private val playDwellRunnable = Runnable {
+        val dir = playLoupeController.onDwellTimeout(SystemClock.elapsedRealtime())
+        if (dir != 0) {
+            playPauseGlass.setSpecularIntensity(1f)
+            val haptic = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                HapticFeedbackConstants.CONFIRM
+            } else {
+                HapticFeedbackConstants.LONG_PRESS
+            }
+            playLoupeView.performHapticFeedback(haptic)
+            triggerTrackNavigation(dir)
+        }
     }
 
     private val sleepDisplayTicker = object : Runnable {
@@ -334,6 +424,18 @@ class NowPlayingView(
     fun setHostActive(active: Boolean) {
         hostActive = active
         vinylDiscView.setHostActive(active)
+        if (!active) {
+            mainHandler.removeCallbacks(playDwellRunnable)
+            SpringAnimatorHelper.cancelSpring(playLoupeView)
+            playLoupeView.translationX = 0f
+            playLoupeView.scaleX = 1f
+            playLoupeView.scaleY = 1f
+            playPauseGlass.setMotionState(0f, touchActive = false)
+            prevButton.scaleX = 1f
+            prevButton.scaleY = 1f
+            nextButton.scaleX = 1f
+            nextButton.scaleY = 1f
+        }
         onVisualizerDemandChanged?.invoke(isVisualizerDemanded())
     }
 
@@ -663,9 +765,11 @@ class NowPlayingView(
 
     override fun onDetachedFromWindow() {
         mainHandler.removeCallbacks(autoResumeRunnable)
+        mainHandler.removeCallbacks(playDwellRunnable)
         mainHandler.removeCallbacks(sleepDisplayTicker)
         lyricsAdapter.cancelScrollAnimation(lyricsRecycler)
         SpringAnimatorHelper.cancelSpring(this, CHANNEL_AMOLED)
+        SpringAnimatorHelper.cancelSpring(playLoupeView)
         SpringAnimatorHelper.cancelSpring(playPauseButton, CHANNEL_PLAY_DRAG)
         SpringAnimatorHelper.cancelSpring(trackArtistView, CHANNEL_ARTIST_SLIDE)
         vinylDiscView.setHostActive(false)
@@ -1433,10 +1537,21 @@ class NowPlayingView(
             }
         )
 
-        // Dock 3: Main Transport Controls (>= 48dp touch targets)
+        // Dock 3: Main Transport Controls (>= 48dp touch targets) with detached sliding Play glass loupe
+        transportHost.apply {
+            clipChildren = false
+            clipToPadding = false
+        }
+        playLoupeView.apply {
+            background = playPauseGlass
+        }
+        transportHost.addView(playLoupeView, LayoutParams(dp(64), dp(64), Gravity.CENTER))
+
         val controlsRow = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
+            clipChildren = false
+            clipToPadding = false
         }
         shuffleButton.apply {
             setImageResource(R.drawable.ic_shuffle)
@@ -1468,21 +1583,26 @@ class NowPlayingView(
         playPauseGlass.setTintProfile(baseFraction = 0.25f, accentFraction = 0.85f, preferAccentGlow = true)
         playPauseButton.apply {
             setImageResource(R.drawable.ic_play)
-            background = playPauseGlass
+            background = null
             imageTintList = ColorStateList.valueOf(0xFFFFFFFF.toInt())
             contentDescription = context.getString(R.string.cd_play_pause)
             scaleType = ImageView.ScaleType.CENTER_INSIDE
             setPadding(dp(18), dp(18), dp(18), dp(18))
             setOnClickListener { audioEngine?.togglePlayPause() }
             setOnTouchListener { v, event ->
+                val nowMs = SystemClock.elapsedRealtime()
                 when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
                         playDragDownRawX = event.rawX
                         playDragDownRawY = event.rawY
+                        lastPlayDragRawX = event.rawX
+                        lastPlayDragTimeMs = nowMs
                         isPlayDragging = false
-                        playDragThresholdCrossed = false
-                        SpringAnimatorHelper.cancelSpring(v, CHANNEL_PLAY_DRAG)
-                        SpringAnimatorHelper.springScale(v, SpringAnimatorHelper.SPRING_PRESS_SCALE)
+                        playLoupeController.onTouchDown()
+                        mainHandler.removeCallbacks(playDwellRunnable)
+                        SpringAnimatorHelper.cancelSpring(playLoupeView, CHANNEL_PLAY_DRAG)
+                        animatePlayLoupeScale(1.07f)
+                        playPauseGlass.setMotionState(0f, touchActive = true)
                         v.parent?.requestDisallowInterceptTouchEvent(true)
                         true
                     }
@@ -1497,49 +1617,70 @@ class NowPlayingView(
                             }
                         }
                         if (isPlayDragging) {
-                            v.translationX = PlayDragMath.computeRubberBandOffset(
-                                dx,
-                                playDragThresholdPx,
-                                playDragMaxOffsetPx
+                            val dtSec = ((nowMs - lastPlayDragTimeMs).coerceAtLeast(1L)) / 1000f
+                            val vx = (event.rawX - lastPlayDragRawX) / dtSec
+                            lastPlayDragRawX = event.rawX
+                            lastPlayDragTimeMs = nowMs
+
+                            val buttonDistance = if (dx >= 0f) {
+                                ((nextButton.left + nextButton.right) * 0.5f - (v.left + v.right) * 0.5f)
+                            } else {
+                                ((v.left + v.right) * 0.5f - (prevButton.left + prevButton.right) * 0.5f)
+                            }.coerceAtLeast(playDragMaxOffsetPx)
+
+                            val update = playLoupeController.onDragMove(
+                                rawDxPx = dx,
+                                thresholdPx = playDragThresholdPx,
+                                maxOffsetPx = buttonDistance,
+                                nowMs = nowMs
                             )
-                            val dir = PlayDragMath.resolveDragDirection(dx, playDragThresholdPx)
-                            if (dir != 0 && !playDragThresholdCrossed) {
-                                playDragThresholdCrossed = true
+                            // Keep Play icon locked at 0f; slide only the glass loupe
+                            v.translationX = playLoupeController.iconTranslationX
+                            playLoupeView.translationX = update.loupeOffsetX
+                            playPauseGlass.setMotionState(vx, touchActive = true)
+                            updateTransportTargetHighlight(update.direction)
+
+                            if (update.thresholdCrossed) {
                                 v.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                            } else if (dir == 0) {
-                                playDragThresholdCrossed = false
+                            }
+                            if (update.cancelDwell) {
+                                mainHandler.removeCallbacks(playDwellRunnable)
+                            }
+                            if (update.scheduleDwell) {
+                                mainHandler.removeCallbacks(playDwellRunnable)
+                                mainHandler.postDelayed(playDwellRunnable, PlayLoupeController.DWELL_DELAY_MS)
                             }
                         }
                         true
                     }
                     MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                         v.parent?.requestDisallowInterceptTouchEvent(false)
-                        SpringAnimatorHelper.springScale(v, 1f)
-                        val dx = event.rawX - playDragDownRawX
-                        val dir = if (event.actionMasked == MotionEvent.ACTION_UP && isPlayDragging) {
-                            PlayDragMath.resolveDragDirection(dx, playDragThresholdPx)
-                        } else {
-                            0
-                        }
+                        mainHandler.removeCallbacks(playDwellRunnable)
+                        val isCancel = event.actionMasked == MotionEvent.ACTION_CANCEL
                         val wasDrag = isPlayDragging
                         isPlayDragging = false
-                        playDragThresholdCrossed = false
+                        updateTransportTargetHighlight(0)
+                        playPauseGlass.setMotionState(0f, touchActive = false)
+                        animatePlayLoupeScale(1f)
+
+                        val triggerDir = playLoupeController.onTouchUp(wasDrag, isCancel)
+                        v.translationX = playLoupeController.iconTranslationX
 
                         if (wasDrag) {
                             SpringAnimatorHelper.animateSpring(
-                                key = v,
-                                start = v.translationX,
+                                key = playLoupeView,
+                                start = playLoupeView.translationX,
                                 target = 0f,
-                                stiffness = SpringAnimatorHelper.SPRING_STIFFNESS,
-                                dampingRatio = SpringAnimatorHelper.SPRING_DAMPING_RATIO,
+                                stiffness = SpringAnimatorHelper.SPRING_LOUPE_GLIDE.stiffness,
+                                dampingRatio = SpringAnimatorHelper.SPRING_LOUPE_GLIDE.dampingRatio,
                                 valueThreshold = 0.25f,
                                 channel = CHANNEL_PLAY_DRAG,
-                                onUpdate = { tx -> v.translationX = tx }
+                                onUpdate = { tx -> playLoupeView.translationX = tx }
                             )
-                            if (dir != 0) {
-                                triggerTrackNavigation(dir)
+                            if (triggerDir != 0) {
+                                triggerTrackNavigation(triggerDir)
                             }
-                        } else if (event.actionMasked == MotionEvent.ACTION_UP) {
+                        } else if (!isCancel) {
                             v.performClick()
                         }
                         true
@@ -1584,8 +1725,9 @@ class NowPlayingView(
         controlsRow.addView(nextButton, LinearLayout.LayoutParams(0, dp(52), 1f))
         controlsRow.addView(repeatButton, LinearLayout.LayoutParams(0, dp(52), 1f))
 
+        transportHost.addView(controlsRow, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT, Gravity.CENTER))
         bottomControlDock.addView(
-            controlsRow,
+            transportHost,
             LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply {
                 bottomMargin = dp(10)
             }
@@ -2111,6 +2253,38 @@ class NowPlayingView(
                 marginStart = dp(8)
             }
         }
+    }
+
+    private fun animatePlayLoupeScale(targetScale: Float) {
+        SpringAnimatorHelper.animateSpring(
+            key = playLoupeView,
+            start = playLoupeView.scaleX,
+            target = targetScale,
+            stiffness = SpringAnimatorHelper.SPRING_LOUPE_GLIDE.stiffness,
+            dampingRatio = SpringAnimatorHelper.SPRING_LOUPE_GLIDE.dampingRatio,
+            channel = 0,
+            onUpdate = { s ->
+                playLoupeView.scaleX = s
+                playLoupeView.scaleY = s
+            }
+        )
+    }
+
+    private fun updateTransportTargetHighlight(direction: Int) {
+        val prevScale = if (direction < 0) 1.08f else 1f
+        val nextScale = if (direction > 0) 1.08f else 1f
+        if (prevButton.scaleX != prevScale) {
+            SpringAnimatorHelper.springScale(prevButton, prevScale)
+        }
+        if (nextButton.scaleX != nextScale) {
+            SpringAnimatorHelper.springScale(nextButton, nextScale)
+        }
+        prevButton.imageTintList = ColorStateList.valueOf(
+            if (direction < 0) palette.accentGlow else 0xFFFFFFFF.toInt()
+        )
+        nextButton.imageTintList = ColorStateList.valueOf(
+            if (direction > 0) palette.accentGlow else 0xFFFFFFFF.toInt()
+        )
     }
 
     private fun dp(value: Int): Int = (value * density).toInt()
