@@ -1079,6 +1079,7 @@ class NowPlayingView(
 
         val currentPos = audioEngine?.getCurrentPositionMs() ?: 0L
         updateActiveLyricForPosition(currentPos, forceScroll = true)
+        lyricsAdapter.updatePlaybackPosition((currentPos + userLyricOffsetMs + btLyricOffsetMs).coerceAtLeast(0L))
         syncAnimationLifecycleGates()
 
         if (parsed.lines.isNotEmpty() && lyricsRecycler.height > 0) {

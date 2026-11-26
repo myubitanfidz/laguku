@@ -464,4 +464,45 @@ class MotionAndInteractiveUiTest {
             )
         )
     }
+
+    @Test
+    fun interludeDotsMath_detectsIntroAndBetweenLine4000msGapsAndProgressiveDotFills() {
+        assertEquals(4_000L, LyricsRecyclerAdapter.InterludeDotsMath.INTERLUDE_THRESHOLD_MS)
+        assertEquals(3, LyricsRecyclerAdapter.InterludeDotsMath.DOT_COUNT)
+        assertEquals(8f, LyricsRecyclerAdapter.InterludeDotsMath.DOT_DIAMETER_DP, 0.0001f)
+        assertEquals(10f, LyricsRecyclerAdapter.InterludeDotsMath.DOT_GAP_DP, 0.0001f)
+
+        val lines = listOf(
+            com.laguku.player.model.LyricLine(timestampMs = 6_000L, text = "Intro arrives", endMs = 8_000L),
+            com.laguku.player.model.LyricLine(timestampMs = 10_500L, text = "Short gap", endMs = 12_000L),
+            com.laguku.player.model.LyricLine(timestampMs = 18_000L, text = "After long interlude", endMs = 20_000L)
+        )
+
+        // Intro >= 4000ms active with linear 0..1 progress
+        val introHalf = LyricsRecyclerAdapter.InterludeDotsMath.resolveInterludeState(lines, positionMs = 3_000L)
+        assertTrue(introHalf.active)
+        assertTrue(introHalf.isIntro)
+        assertEquals(0, introHalf.anchorRowIndex)
+        assertEquals(0.5f, introHalf.progress, 0.001f)
+
+        // Short 2500ms gap between lines 0 and 1 must NOT trigger dots
+        val shortGap = LyricsRecyclerAdapter.InterludeDotsMath.resolveInterludeState(lines, positionMs = 9_000L)
+        assertFalse(shortGap.active)
+
+        // Long 6000ms gap between lines 1 and 2 triggers between-line interlude
+        val longMid = LyricsRecyclerAdapter.InterludeDotsMath.resolveInterludeState(lines, positionMs = 15_000L)
+        assertTrue(longMid.active)
+        assertFalse(longMid.isIntro)
+        assertEquals(1, longMid.anchorRowIndex)
+        assertEquals(0.5f, longMid.progress, 0.001f)
+
+        // Progressive 3-dot fill light across countdown
+        val d0Start = LyricsRecyclerAdapter.InterludeDotsMath.computeDotFillAlpha(0, 0f)
+        val d0Full = LyricsRecyclerAdapter.InterludeDotsMath.computeDotFillAlpha(0, 0.34f)
+        val d1Half = LyricsRecyclerAdapter.InterludeDotsMath.computeDotFillAlpha(1, 0.50f)
+        val d2End = LyricsRecyclerAdapter.InterludeDotsMath.computeDotFillAlpha(2, 1.00f)
+        assertTrue(d0Full > d0Start)
+        assertTrue(d1Half in 0.50f..0.75f)
+        assertEquals(1.0f, d2End, 0.001f)
+    }
 }

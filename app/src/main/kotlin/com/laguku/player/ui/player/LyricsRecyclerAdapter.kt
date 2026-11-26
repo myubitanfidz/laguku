@@ -15,21 +15,25 @@ import android.view.Choreographer
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
+import android.view.View
 import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.laguku.player.data.PlaybackStateStore
+import com.laguku.player.lyrics.LrcParser
 import com.laguku.player.model.CoverPalette
 import com.laguku.player.model.LyricLine
 import com.laguku.player.model.ParsedLyrics
 import com.laguku.player.model.WordToken
 import com.laguku.player.ui.glass.CoverPaletteExtractor
 import com.laguku.player.ui.motion.SpringAnimatorHelper
+import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.min
 import kotlin.math.roundToInt
+import kotlin.math.sin
 
 /**
  * Calibrated Apple Music-style physics and timing constants for lyrics motion.
@@ -274,6 +278,83 @@ class LyricsRecyclerAdapter(
         }
     }
 
+    object InterludeDotsMath {
+        const val INTERLUDE_THRESHOLD_MS = 4_000L
+        const val DOT_COUNT = 3
+        const val DOT_DIAMETER_DP = 8f
+        const val DOT_GAP_DP = 10f
+
+        data class InterludeState(
+            val active: Boolean = false,
+            val anchorRowIndex: Int = -1,
+            val isIntro: Boolean = false,
+            val progress: Float = 0f,
+            val pulseScale: Float = 1f
+        )
+
+        val INACTIVE = InterludeState()
+
+        fun estimateLineEndMs(line: LyricLine): Long {
+            line.endMs?.let { explicitEnd ->
+                if (explicitEnd > line.timestampMs) return explicitEnd
+            }
+            if (line.words.isNotEmpty()) {
+                val lastWord = line.words.last()
+                return lastWord.endMs?.coerceAtLeast(lastWord.startMs + 80L)
+                    ?: (lastWord.startMs + 500L)
+            }
+            if (line.primaryText.isBlank()) return line.timestampMs
+            val estimatedDuration = (line.primaryText.length * 85L).coerceIn(1_200L, 4_200L)
+            return line.timestampMs + estimatedDuration
+        }
+
+        fun resolveInterludeState(
+            lines: List<LyricLine>,
+            positionMs: Long,
+            pulsePhaseRad: Float = 0f
+        ): InterludeState {
+            if (lines.isEmpty() || positionMs < 0L) return INACTIVE
+            val pulseScale = 0.92f + 0.12f * (0.5f + 0.5f * sin(pulsePhaseRad))
+            val firstStart = lines[0].timestampMs
+            if (firstStart >= INTERLUDE_THRESHOLD_MS && positionMs < firstStart) {
+                val progress = (positionMs.toFloat() / firstStart.toFloat()).coerceIn(0f, 1f)
+                return InterludeState(
+                    active = true,
+                    anchorRowIndex = 0,
+                    isIntro = true,
+                    progress = progress,
+                    pulseScale = pulseScale
+                )
+            }
+            val currentIdx = LrcParser.findActiveLineIndex(lines, positionMs)
+            if (currentIdx in 0 until lines.lastIndex) {
+                val lineEnd = estimateLineEndMs(lines[currentIdx])
+                val nextStart = lines[currentIdx + 1].timestampMs
+                val gapMs = nextStart - lineEnd
+                if (gapMs >= INTERLUDE_THRESHOLD_MS && positionMs in lineEnd until nextStart) {
+                    val progress = ((positionMs - lineEnd).toFloat() / gapMs.toFloat()).coerceIn(0f, 1f)
+                    return InterludeState(
+                        active = true,
+                        anchorRowIndex = currentIdx,
+                        isIntro = false,
+                        progress = progress,
+                        pulseScale = pulseScale
+                    )
+                }
+            }
+            return INACTIVE
+        }
+
+        fun computeDotFillAlpha(dotIndex: Int, overallProgress: Float): Float {
+            if (dotIndex !in 0 until DOT_COUNT) return 0.22f
+            val clamped = overallProgress.coerceIn(0f, 1f)
+            val slice = 1f / DOT_COUNT.toFloat()
+            val localStart = dotIndex * slice
+            val fill = ((clamped - localStart) / slice).coerceIn(0f, 1f)
+            return 0.22f + 0.78f * fill
+        }
+    }
+
     private var lines: List<LyricLine> = emptyList()
     private var synced: Boolean = false
     private var activeIndex: Int = -1
@@ -282,6 +363,7 @@ class LyricsRecyclerAdapter(
     private var bottomSafeMarginPx: Int = 0
     private var defaultFadePx: Int = 0
 
+    private var accentColorRaw: Int = CoverPaletteExtractor.defaultPalette().accentGlow
     private var accentTranslationFocusedColor: Int = computeSoftAccentColor(
         CoverPaletteExtractor.defaultPalette().accentGlow,
         focused = true
@@ -290,6 +372,13 @@ class LyricsRecyclerAdapter(
         CoverPaletteExtractor.defaultPalette().accentGlow,
         focused = false
     )
+
+    private var interludePhaseRad: Float = 0f
+    private var interludeActive: Boolean = false
+    private var interludeAnchorRow: Int = -1
+    private var interludeIsIntro: Boolean = false
+    private var interludeProgress: Float = 0f
+    private var interludePulseScale: Float = 1f
 
     private val subPixelAccumulator = LyricMotionMath.SubPixelScrollAccumulator()
     var subPixelRemainder: Float = 0f
@@ -348,6 +437,7 @@ class LyricsRecyclerAdapter(
             val reducedMotion = SpringAnimatorHelper.isReducedMotionEnabled(rv.context)
             var needsMoreFrames = scrollSpringActive
             val sweepPosMs = computeInterpolatedPlaybackPosMs(frameTimeNanos)
+            refreshInterludePrimitives(sweepPosMs, dtSec, advancePhase = playbackActive && !reducedMotion)
 
             for (i in 0 until rv.childCount) {
                 val child = rv.getChildAt(i)
@@ -402,9 +492,11 @@ class LyricsRecyclerAdapter(
                 } else {
                     holder.mainText.setSweepProgress(active = false, charProgress = 0f)
                 }
+
+                bindInterludeForHolder(holder, pos)
             }
 
-            if (shouldKeepWordSweepRunning(reducedMotion)) {
+            if (shouldKeepWordSweepRunning(reducedMotion) || (interludeActive && playbackActive && !reducedMotion)) {
                 needsMoreFrames = true
             }
 
@@ -450,28 +542,77 @@ class LyricsRecyclerAdapter(
     fun updatePlaybackPosition(positionMs: Long) {
         lastPlaybackPositionMs = positionMs.coerceAtLeast(0L)
         lastPlaybackAnchorNanos = System.nanoTime()
-        if (lyricsModeActive && synced && activeIndex in lines.indices) {
+        refreshInterludePrimitives(lastPlaybackPositionMs, dtSec = 0f, advancePhase = false)
+        if (lyricsModeActive && synced) {
             val rv = attachedRecyclerView
             if (rv != null && !playbackActive) {
-                val lm = rv.layoutManager as? LinearLayoutManager
-                val view = lm?.findViewByPosition(activeIndex)
-                val holder = view?.let { rv.getChildViewHolder(it) as? LyricViewHolder }
-                if (holder != null) {
-                    val line = lines[activeIndex]
-                    val nextTs = lines.getOrNull(activeIndex + 1)?.timestampMs ?: (line.timestampMs + 3_200L)
-                    val charProgress = LyricMotionMath.computeSweepCharProgress(
-                        textLength = holder.mainText.length(),
-                        words = line.words,
-                        lineStartMs = line.timestampMs,
-                        lineEndMs = nextTs,
-                        positionMs = lastPlaybackPositionMs,
-                        sweepEnabled = LyricMotionSpec.WORD_SWEEP_ENABLED
-                    )
-                    holder.mainText.setSweepProgress(active = true, charProgress = charProgress)
+                for (i in 0 until rv.childCount) {
+                    val holder = rv.getChildViewHolder(rv.getChildAt(i)) as? LyricViewHolder ?: continue
+                    val pos = holder.bindingAdapterPosition
+                    bindInterludeForHolder(holder, pos)
+                    if (!selectionMode && pos == activeIndex && pos in lines.indices) {
+                        val line = lines[pos]
+                        val nextTs = lines.getOrNull(pos + 1)?.timestampMs ?: (line.timestampMs + 3_200L)
+                        val charProgress = LyricMotionMath.computeSweepCharProgress(
+                            textLength = holder.mainText.length(),
+                            words = line.words,
+                            lineStartMs = line.timestampMs,
+                            lineEndMs = nextTs,
+                            positionMs = lastPlaybackPositionMs,
+                            sweepEnabled = LyricMotionSpec.WORD_SWEEP_ENABLED
+                        )
+                        holder.mainText.setSweepProgress(active = true, charProgress = charProgress)
+                    }
                 }
             }
             ensureChoreographerIfNeeded()
         }
+    }
+
+    private fun refreshInterludePrimitives(positionMs: Long, dtSec: Float, advancePhase: Boolean) {
+        if (!synced || selectionMode || lines.isEmpty() || positionMs < 0L) {
+            interludeActive = false
+            interludeAnchorRow = -1
+            interludeProgress = 0f
+            return
+        }
+        if (advancePhase && dtSec > 0f) {
+            val twoPi = (2.0 * PI).toFloat()
+            interludePhaseRad = (interludePhaseRad + dtSec * (twoPi / 1.8f)) % twoPi
+        }
+        val firstStart = lines[0].timestampMs
+        if (firstStart >= InterludeDotsMath.INTERLUDE_THRESHOLD_MS && positionMs < firstStart) {
+            interludeActive = true
+            interludeAnchorRow = 0
+            interludeIsIntro = true
+            interludeProgress = (positionMs.toFloat() / firstStart.toFloat()).coerceIn(0f, 1f)
+            interludePulseScale = 0.92f + 0.12f * (0.5f + 0.5f * sin(interludePhaseRad))
+            return
+        }
+        val idx = LrcParser.findActiveLineIndex(lines, positionMs)
+        if (idx in 0 until lines.lastIndex) {
+            val lineEnd = InterludeDotsMath.estimateLineEndMs(lines[idx])
+            val nextStart = lines[idx + 1].timestampMs
+            val gap = nextStart - lineEnd
+            if (gap >= InterludeDotsMath.INTERLUDE_THRESHOLD_MS && positionMs in lineEnd until nextStart) {
+                interludeActive = true
+                interludeAnchorRow = idx
+                interludeIsIntro = false
+                interludeProgress = ((positionMs - lineEnd).toFloat() / gap.toFloat()).coerceIn(0f, 1f)
+                interludePulseScale = 0.92f + 0.12f * (0.5f + 0.5f * sin(interludePhaseRad))
+                return
+            }
+        }
+        interludeActive = false
+        interludeAnchorRow = -1
+        interludeProgress = 0f
+    }
+
+    private fun bindInterludeForHolder(holder: LyricViewHolder, pos: Int) {
+        val showTop = interludeActive && interludeIsIntro && pos == interludeAnchorRow
+        val showBottom = interludeActive && !interludeIsIntro && pos == interludeAnchorRow
+        holder.topInterludeDots.setInterludeState(showTop, interludeProgress, interludePulseScale, accentColorRaw)
+        holder.bottomInterludeDots.setInterludeState(showBottom, interludeProgress, interludePulseScale, accentColorRaw)
     }
 
     fun startSpringScrollTarget(deltaPx: Float) {
@@ -536,7 +677,7 @@ class LyricsRecyclerAdapter(
             synced &&
             !selectionMode &&
             LyricMotionSpec.WORD_SWEEP_ENABLED &&
-            activeIndex in lines.indices
+            (activeIndex in lines.indices || interludeActive)
     }
 
     private fun ensureChoreographerIfNeeded() {
@@ -587,6 +728,7 @@ class LyricsRecyclerAdapter(
     }
 
     fun setAccentColor(accentGlow: Int) {
+        accentColorRaw = accentGlow
         accentTranslationFocusedColor = computeSoftAccentColor(accentGlow, focused = true)
         accentTranslationMutedColor = computeSoftAccentColor(accentGlow, focused = false)
         if (lines.isNotEmpty()) {
@@ -811,6 +953,10 @@ class LyricsRecyclerAdapter(
             pivotX = hPad.toFloat()
         }
 
+        val topDots = InterludeDotsView(parent.context).apply {
+            setPadding(0, 0, 0, (10f * density).toInt())
+            visibility = View.GONE
+        }
         val mainTv = SweepLyricTextView(parent.context).apply {
             maxLines = Int.MAX_VALUE
             ellipsize = null
@@ -824,7 +970,7 @@ class LyricsRecyclerAdapter(
             setTextSize(TypedValue.COMPLEX_UNIT_SP, SIZE_ROMANIZED_SP)
             typeface = TYPEFACE_MEDIUM
             setPadding(0, (3f * density).toInt(), 0, 0)
-            visibility = android.view.View.GONE
+            visibility = View.GONE
         }
         val subTv = TextView(parent.context).apply {
             maxLines = Int.MAX_VALUE
@@ -832,13 +978,19 @@ class LyricsRecyclerAdapter(
             setTextSize(TypedValue.COMPLEX_UNIT_SP, SIZE_TRANSLATION_SP)
             typeface = TYPEFACE_MEDIUM
             setPadding(0, (3f * density).toInt(), 0, 0)
-            visibility = android.view.View.GONE
+            visibility = View.GONE
         }
+        val bottomDots = InterludeDotsView(parent.context).apply {
+            setPadding(0, (10f * density).toInt(), 0, 0)
+            visibility = View.GONE
+        }
+        row.addView(topDots, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         row.addView(mainTv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         row.addView(romanizedTv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         row.addView(subTv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        row.addView(bottomDots, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
 
-        val holder = LyricViewHolder(row, mainTv, romanizedTv, subTv)
+        val holder = LyricViewHolder(row, topDots, mainTv, romanizedTv, subTv, bottomDots)
         row.setOnClickListener { view ->
             val pos = holder.bindingAdapterPosition
             if (pos !in lines.indices) return@setOnClickListener
@@ -900,11 +1052,12 @@ class LyricsRecyclerAdapter(
 
         val tr = line.translatedText
         if (tr.isNullOrBlank()) {
-            holder.subText.visibility = android.view.View.GONE
+            holder.subText.visibility = View.GONE
         } else {
             holder.subText.text = tr
-            holder.subText.visibility = android.view.View.VISIBLE
+            holder.subText.visibility = View.VISIBLE
         }
+        bindInterludeForHolder(holder, position)
         bindVisualState(holder, position, animateFocus = false)
     }
 
@@ -1152,11 +1305,89 @@ class LyricsRecyclerAdapter(
         }
     }
 
+    class InterludeDotsView(context: Context) : View(context) {
+        private val density = resources.displayMetrics.density
+        private val dotRadiusPx = (InterludeDotsMath.DOT_DIAMETER_DP * 0.5f) * density
+        private val centerStepPx = (InterludeDotsMath.DOT_DIAMETER_DP + InterludeDotsMath.DOT_GAP_DP) * density
+        private val extraPadPx = 2f * density
+
+        private var progress: Float = 0f
+        private var pulseScale: Float = 1f
+        private var accentColor: Int = CoverPaletteExtractor.defaultPalette().accentGlow
+
+        private val shellPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL
+            color = 0x29FFFFFF
+        }
+        private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL
+            color = 0xE6FFFFFF.toInt()
+        }
+        private val rimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = (0.9f * density).coerceAtLeast(1f)
+            color = 0x55FFFFFF
+        }
+
+        fun setInterludeState(
+            visible: Boolean,
+            progress: Float,
+            pulseScale: Float,
+            accentColor: Int
+        ) {
+            val targetVis = if (visible) VISIBLE else GONE
+            if (visibility != targetVis) {
+                visibility = targetVis
+            }
+            if (!visible) return
+            val clampedP = progress.coerceIn(0f, 1f)
+            val clampedScale = pulseScale.coerceIn(0.85f, 1.15f)
+            if (abs(this.progress - clampedP) < 0.004f &&
+                abs(this.pulseScale - clampedScale) < 0.003f &&
+                this.accentColor == accentColor
+            ) {
+                return
+            }
+            this.progress = clampedP
+            this.pulseScale = clampedScale
+            this.accentColor = accentColor
+            invalidate()
+        }
+
+        override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+            val contentW = (InterludeDotsMath.DOT_COUNT - 1) * centerStepPx + dotRadiusPx * 2f + extraPadPx * 2f
+            val contentH = dotRadiusPx * 2f + extraPadPx * 2f
+            val w = (paddingLeft + paddingRight + contentW).roundToInt()
+            val h = (paddingTop + paddingBottom + contentH).roundToInt()
+            setMeasuredDimension(resolveSize(w, widthMeasureSpec), resolveSize(h, heightMeasureSpec))
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            if (visibility != VISIBLE) return
+            val baseX = paddingLeft + dotRadiusPx + extraPadPx
+            val cy = paddingTop + (height - paddingTop - paddingBottom) * 0.5f
+            val r = dotRadiusPx * pulseScale
+            val accentRgb = accentColor and 0x00FFFFFF
+            for (i in 0 until InterludeDotsMath.DOT_COUNT) {
+                val cx = baseX + i * centerStepPx
+                canvas.drawCircle(cx, cy, r, shellPaint)
+                val fillAlpha = InterludeDotsMath.computeDotFillAlpha(i, progress)
+                val alphaByte = (fillAlpha * 238f).roundToInt().coerceIn(0, 255)
+                fillPaint.color = (alphaByte shl 24) or accentRgb
+                val innerR = r * (0.68f + 0.32f * fillAlpha)
+                canvas.drawCircle(cx, cy, innerR, fillPaint)
+                canvas.drawCircle(cx, cy, r, rimPaint)
+            }
+        }
+    }
+
     class LyricViewHolder(
         val rowView: LyricRowLayout,
+        val topInterludeDots: InterludeDotsView,
         val mainText: SweepLyricTextView,
         val romanizedText: TextView,
-        val subText: TextView
+        val subText: TextView,
+        val bottomInterludeDots: InterludeDotsView
     ) : RecyclerView.ViewHolder(rowView) {
         var appliedBlurIndex: Int = -1
         var focusProgress: Float = 0f
