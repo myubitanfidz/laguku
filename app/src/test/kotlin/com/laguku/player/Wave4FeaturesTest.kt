@@ -6,6 +6,8 @@ import com.laguku.player.metadata.BinaryTagReader
 import com.laguku.player.model.LyricSource
 import com.laguku.player.ui.motion.SpringAnimatorHelper
 import com.laguku.player.ui.player.LyricMotionSpec
+import com.laguku.player.ui.player.LyricShareCardProvider
+import com.laguku.player.ui.player.LyricShareCardRenderer
 import com.laguku.player.ui.player.LyricsRecyclerAdapter
 import com.laguku.player.ui.player.NowPlayingView
 import com.laguku.player.ui.player.WaveformPillSeekBarView
@@ -307,6 +309,42 @@ class Wave4FeaturesTest {
         controller.onLineTapSeek()
         assertFalse(controller.isPaused)
         assertFalse(controller.shouldAutoResume(15_000L))
+    }
+
+    @Test
+    fun lyricShareCardSpec_enforces1To4ContiguousSelectionDimensionsAndProviderPathSafety() {
+        assertEquals(1080, LyricShareCardRenderer.CARD_WIDTH_PX)
+        assertEquals(1350, LyricShareCardRenderer.CARD_HEIGHT_PX)
+        assertEquals(20f, LyricShareCardRenderer.COVER_CORNER_RADIUS_PX, 0.0001f)
+        assertEquals(4, LyricsRecyclerAdapter.QuoteSelectionMath.MAX_QUOTE_LINES)
+
+        // 1..4 contiguous selection behavior
+        var sel = LyricsRecyclerAdapter.QuoteSelectionMath.toggleContiguousSelection(emptyList(), 2, totalCount = 10)
+        assertEquals(listOf(2), sel)
+
+        // Expand contiguously from 2 -> 4 => [2, 3, 4]
+        sel = LyricsRecyclerAdapter.QuoteSelectionMath.toggleContiguousSelection(sel, 4, totalCount = 10)
+        assertEquals(listOf(2, 3, 4), sel)
+        assertTrue(LyricsRecyclerAdapter.QuoteSelectionMath.isContiguous(sel))
+
+        // Expand to 1 => [1, 2, 3, 4] (max 4 lines)
+        sel = LyricsRecyclerAdapter.QuoteSelectionMath.toggleContiguousSelection(sel, 1, totalCount = 10)
+        assertEquals(listOf(1, 2, 3, 4), sel)
+
+        // Attempt expanding past 4 lines (tap index 5) resets cleanly to single line [5]
+        sel = LyricsRecyclerAdapter.QuoteSelectionMath.toggleContiguousSelection(sel, 5, totalCount = 10)
+        assertEquals(listOf(5), sel)
+
+        // Clamp share lines to 4 max
+        val rawLines = (0 until 7).map { idx -> com.laguku.player.model.LyricLine(idx * 1000L, "Baris $idx") }
+        assertEquals(4, LyricShareCardRenderer.ShareCardSpec.clampContiguousLines(rawLines).size)
+
+        // ContentProvider path traversal safety
+        val cacheDir = tempFolder.newFolder("card_cache")
+        val valid = LyricShareCardProvider.SecuritySpec.resolveSafeCardFile(cacheDir, "laguku_quote_card.png")
+        assertTrue(valid != null && valid.parentFile?.name == "shared_cards")
+        assertNull(LyricShareCardProvider.SecuritySpec.resolveSafeCardFile(cacheDir, "../secret.png"))
+        assertNull(LyricShareCardProvider.SecuritySpec.resolveSafeCardFile(cacheDir, "sub/card.png"))
     }
 
     // --- Synthetic Binary Helpers ---

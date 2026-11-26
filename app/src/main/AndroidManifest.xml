@@ -68,6 +68,12 @@
                 android:resource="@xml/file_paths" />
         </provider>
 
+        <provider
+            android:name=".ui.player.LyricShareCardProvider"
+            android:authorities="${applicationId}.sharecardprovider"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+
         <receiver
             android:name=".widget.LagukuPillWidgetProvider"
             android:exported="true"

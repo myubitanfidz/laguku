@@ -93,7 +93,8 @@
     <string name="lyric_anchor_top">Atas 28%</string>
     <string name="lyric_anchor_optimal">Optimal 36%</string>
     <string name="lyric_anchor_center">Tengah 48%</string>
-    <string name="share_card_fmt">Bagikan (%1$d)</string>
+    <string name="share_quote_card_label">Bagikan Kartu</string>
+    <string name="share_card_fmt">Bagikan Kartu (%1$d)</string>
     <string name="cancel_label">Batal</string>
     <string name="audio_lab_title">Audio Lab</string>
     <string name="tab_eq_10">EQ 10-Band</string>

@@ -355,6 +355,46 @@ class LyricsRecyclerAdapter(
         }
     }
 
+    object QuoteSelectionMath {
+        const val MAX_QUOTE_LINES = 4
+
+        fun isContiguous(indices: List<Int>): Boolean {
+            if (indices.size <= 1) return true
+            val sorted = indices.sorted()
+            for (i in 1 until sorted.size) {
+                if (sorted[i] - sorted[i - 1] != 1) return false
+            }
+            return true
+        }
+
+        fun toggleContiguousSelection(
+            currentSorted: List<Int>,
+            tappedIndex: Int,
+            totalCount: Int,
+            maxLines: Int = MAX_QUOTE_LINES
+        ): List<Int> {
+            if (tappedIndex !in 0 until totalCount) return currentSorted
+            if (currentSorted.isEmpty()) return listOf(tappedIndex)
+            val first = currentSorted.first()
+            val last = currentSorted.last()
+            if (tappedIndex in first..last) {
+                return when {
+                    first == last -> emptyList()
+                    tappedIndex == first -> ((first + 1)..last).toList()
+                    tappedIndex == last -> (first until last).toList()
+                    else -> (first..tappedIndex).toList()
+                }
+            }
+            val newMin = minOf(first, tappedIndex)
+            val newMax = maxOf(last, tappedIndex)
+            return if (newMax - newMin + 1 <= maxLines) {
+                (newMin..newMax).toList()
+            } else {
+                listOf(tappedIndex)
+            }
+        }
+    }
+
     private var lines: List<LyricLine> = emptyList()
     private var synced: Boolean = false
     private var activeIndex: Int = -1
@@ -1023,12 +1063,15 @@ class LyricsRecyclerAdapter(
     }
 
     private fun toggleSelection(pos: Int) {
-        if (selectedIndices.contains(pos)) {
-            selectedIndices.remove(pos)
-            if (selectedIndices.isEmpty()) selectionMode = false
-        } else if (selectedIndices.size < MAX_SELECTED_QUOTE_LINES) {
-            selectedIndices.add(pos)
-        }
+        val next = QuoteSelectionMath.toggleContiguousSelection(
+            currentSorted = selectedIndices.sorted(),
+            tappedIndex = pos,
+            totalCount = lines.size,
+            maxLines = MAX_SELECTED_QUOTE_LINES
+        )
+        selectedIndices.clear()
+        selectedIndices.addAll(next)
+        selectionMode = selectedIndices.isNotEmpty()
         onSelectionChanged?.invoke(getSelectedLines())
         notifyDataSetChanged()
     }

@@ -1591,7 +1591,11 @@ class NowPlayingView(
                 if (selected.isEmpty()) {
                     SpringAnimatorHelper.springDismiss(lyricQuoteBar, toTranslationY = dp(8).toFloat(), toScale = 0.96f)
                 } else {
-                    shareQuoteBtn.text = context.getString(R.string.share_card_fmt, selected.size)
+                    shareQuoteBtn.text = if (selected.size == 1) {
+                        context.getString(R.string.share_quote_card_label)
+                    } else {
+                        context.getString(R.string.share_card_fmt, selected.size)
+                    }
                     if (lyricQuoteBar.visibility != View.VISIBLE) {
                         SpringAnimatorHelper.springReveal(lyricQuoteBar, fromTranslationY = dp(10).toFloat(), fromScale = 0.96f)
                     }
@@ -1910,7 +1914,7 @@ class NowPlayingView(
             setPadding(dp(10), dp(4), dp(10), dp(4))
             visibility = View.GONE
         }
-        configureCompactPillBtn(shareQuoteBtn, context.getString(R.string.share_card_fmt, 1)) {
+        configureCompactPillBtn(shareQuoteBtn, context.getString(R.string.share_quote_card_label)) {
             val t = audioEngine?.getCurrentTrack() ?: return@configureCompactPillBtn
             val selected = lyricsAdapter.getSelectedLines()
             if (selected.isNotEmpty()) {

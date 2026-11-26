@@ -62,7 +62,7 @@ import com.laguku.player.ui.library.LibraryUtilitiesSheetView
 import com.laguku.player.ui.library.LibraryView
 import com.laguku.player.ui.motion.SpringAnimatorHelper
 import com.laguku.player.ui.player.AudioLabSheetView
-import com.laguku.player.ui.player.LyricCardRenderer
+import com.laguku.player.ui.player.LyricShareCardRenderer
 import com.laguku.player.ui.player.NowPlayingView
 import com.laguku.player.ui.player.TapToSyncSheetView
 import com.laguku.player.ui.player.WaveformPillSeekBarView
@@ -1243,11 +1243,11 @@ class MainActivity : Activity(), AudioEngine.Listener, LibraryView.Callbacks, Pl
         val cover = lastDisplayCover
         val pal = currentPalette
         backgroundExecutor.execute {
-            val file = LyricCardRenderer.renderCardFile(this@MainActivity, track, lines, cover, pal)
+            val file = LyricShareCardRenderer.renderCardFile(this@MainActivity, track, lines, cover, pal)
             runOnUiThread {
                 if (file != null && !isDestroyed) {
-                    val shareIntent = LyricCardRenderer.buildShareIntent(this@MainActivity, file, track.title)
-                    runCatching { startActivity(Intent.createChooser(shareIntent, "Bagikan Kartu Lirik")) }
+                    val shareIntent = LyricShareCardRenderer.buildShareIntent(this@MainActivity, file, track.title)
+                    runCatching { startActivity(Intent.createChooser(shareIntent, getString(R.string.share_quote_card_label))) }
                 } else {
                     Toast.makeText(this@MainActivity, "Gagal membuat kartu lirik", Toast.LENGTH_SHORT).show()
                 }
