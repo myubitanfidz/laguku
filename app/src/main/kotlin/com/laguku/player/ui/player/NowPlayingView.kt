@@ -785,6 +785,8 @@ class NowPlayingView(
 
     private fun buildUi() {
         contentColumn.orientation = LinearLayout.VERTICAL
+        contentColumn.clipChildren = false
+        contentColumn.clipToPadding = false
         contentColumn.setPadding(dp(20), dp(12), dp(20), dp(16))
         addView(contentColumn, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
 
@@ -1489,6 +1491,8 @@ class NowPlayingView(
 
     private fun buildBottomControlDock() {
         bottomControlDock.orientation = LinearLayout.VERTICAL
+        bottomControlDock.clipChildren = false
+        bottomControlDock.clipToPadding = false
         bottomControlDock.setPadding(0, dp(4), 0, 0)
 
         // Dock 1: Track Title & Artist + quick Favorit & Antrean (>= 48dp touch targets)
