@@ -321,4 +321,51 @@ class MotionAndInteractiveUiTest {
         // Up scroll past threshold restores full navbar
         assertFalse(LibraryView.NavBarScrollMath.resolveCompactState(currentlyCompact = true, dy = -24))
     }
+
+    @Test
+    fun lyricsMorphSpec_resolvesMiniHeaderSecondaryDockAndDissolutionStates() {
+        assertEquals(44f, NowPlayingView.LyricsMorphSpec.MINI_COVER_SIZE_DP, 0.0001f)
+        assertEquals(10f, NowPlayingView.LyricsMorphSpec.MINI_COVER_CORNER_RADIUS_DP, 0.0001f)
+        assertEquals(16f, NowPlayingView.LyricsMorphSpec.MINI_TITLE_SIZE_SP, 0.0001f)
+        assertEquals(13f, NowPlayingView.LyricsMorphSpec.MINI_ARTIST_SIZE_SP, 0.0001f)
+        assertEquals(0.68f, NowPlayingView.LyricsMorphSpec.MINI_ARTIST_ALPHA, 0.0001f)
+        assertEquals(340f, NowPlayingView.LyricsMorphSpec.MORPH_RESPONSE_MS, 0.0001f)
+        assertEquals(0.88f, NowPlayingView.LyricsMorphSpec.MORPH_DAMPING_FRACTION, 0.0001f)
+        assertEquals(0.70f, NowPlayingView.LyricsMorphSpec.LYRICS_VIEWPORT_TARGET_FRACTION, 0.0001f)
+        assertEquals(SpringAnimatorHelper.SPRING_SMOOTH.dampingRatio, NowPlayingView.LyricsMorphSpec.MORPH_DAMPING_FRACTION, 0.0001f)
+
+        val coverChrome = NowPlayingView.LyricsMorphSpec.resolveChromeState(NowPlayingView.DisplayMode.FULL_COVER)
+        assertFalse(coverChrome.showMiniHeader)
+        assertTrue(coverChrome.showPassiveHeader)
+        assertTrue(coverChrome.showDockTrackRow)
+        assertTrue(coverChrome.showSecondaryDockRow)
+        assertTrue(coverChrome.showCenterCover)
+
+        val discChrome = NowPlayingView.LyricsMorphSpec.resolveChromeState(NowPlayingView.DisplayMode.VINYL_DISC)
+        assertFalse(discChrome.showMiniHeader)
+        assertTrue(discChrome.showSecondaryDockRow)
+        assertTrue(discChrome.showVinylDisc)
+
+        val lyricsChrome = NowPlayingView.LyricsMorphSpec.resolveChromeState(NowPlayingView.DisplayMode.LYRICS_FOCUS)
+        assertTrue(lyricsChrome.showMiniHeader)
+        assertFalse(lyricsChrome.showPassiveHeader)
+        assertFalse(lyricsChrome.showDockTrackRow)
+        assertFalse(lyricsChrome.showSecondaryDockRow)
+        assertTrue(lyricsChrome.showLyricsStage)
+
+        val zenLyricsChrome = NowPlayingView.LyricsMorphSpec.resolveChromeState(NowPlayingView.DisplayMode.LYRICS_FOCUS, zenMode = true)
+        assertFalse(zenLyricsChrome.showMiniHeader)
+
+        val emptyEdge = NowPlayingView.LyricsMorphSpec.computeEdgeDissolutionAlphas(0, 500, 100f, hasLines = false)
+        assertEquals(0f to 0f, emptyEdge)
+        val topEdge = NowPlayingView.LyricsMorphSpec.computeEdgeDissolutionAlphas(0, 500, 100f, hasLines = true)
+        assertEquals(0f, topEdge.first, 0.0001f)
+        assertEquals(1f, topEdge.second, 0.0001f)
+        val midEdge = NowPlayingView.LyricsMorphSpec.computeEdgeDissolutionAlphas(200, 500, 100f, hasLines = true)
+        assertEquals(1f, midEdge.first, 0.0001f)
+        assertEquals(1f, midEdge.second, 0.0001f)
+        val bottomEdge = NowPlayingView.LyricsMorphSpec.computeEdgeDissolutionAlphas(500, 500, 100f, hasLines = true)
+        assertEquals(1f, bottomEdge.first, 0.0001f)
+        assertEquals(0f, bottomEdge.second, 0.0001f)
+    }
 }

@@ -4,7 +4,14 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.res.ColorStateList
 import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.LinearGradient
+import android.graphics.Matrix
 import android.graphics.Outline
+import android.graphics.Paint
+import android.graphics.PorterDuff
+import android.graphics.PorterDuffXfermode
+import android.graphics.Shader
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
@@ -21,6 +28,7 @@ import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.view.ViewOutlineProvider
+import android.view.ViewTreeObserver
 import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.ImageView
@@ -229,6 +237,73 @@ class NowPlayingView(
         }
     }
 
+    object LyricsMorphSpec {
+        const val MINI_COVER_SIZE_DP = 44f
+        const val MINI_COVER_CORNER_RADIUS_DP = 10f
+        const val MINI_TITLE_SIZE_SP = 16f
+        const val MINI_ARTIST_SIZE_SP = 13f
+        const val MINI_ARTIST_ALPHA = 0.68f
+        const val MORPH_RESPONSE_MS = 340f
+        const val MORPH_DAMPING_FRACTION = 0.88f
+        const val LYRICS_VIEWPORT_TARGET_FRACTION = 0.70f
+
+        data class ModeChromeState(
+            val showMiniHeader: Boolean,
+            val showPassiveHeader: Boolean,
+            val showDockTrackRow: Boolean,
+            val showSecondaryDockRow: Boolean,
+            val showCenterCover: Boolean,
+            val showVinylDisc: Boolean,
+            val showLyricsStage: Boolean
+        )
+
+        fun resolveChromeState(mode: DisplayMode, zenMode: Boolean = false): ModeChromeState {
+            return when (mode) {
+                DisplayMode.LYRICS_FOCUS -> ModeChromeState(
+                    showMiniHeader = !zenMode,
+                    showPassiveHeader = false,
+                    showDockTrackRow = false,
+                    showSecondaryDockRow = false,
+                    showCenterCover = false,
+                    showVinylDisc = false,
+                    showLyricsStage = true
+                )
+                DisplayMode.FULL_COVER -> ModeChromeState(
+                    showMiniHeader = false,
+                    showPassiveHeader = !zenMode,
+                    showDockTrackRow = !zenMode,
+                    showSecondaryDockRow = !zenMode,
+                    showCenterCover = true,
+                    showVinylDisc = false,
+                    showLyricsStage = false
+                )
+                DisplayMode.VINYL_DISC -> ModeChromeState(
+                    showMiniHeader = false,
+                    showPassiveHeader = !zenMode,
+                    showDockTrackRow = !zenMode,
+                    showSecondaryDockRow = !zenMode,
+                    showCenterCover = false,
+                    showVinylDisc = true,
+                    showLyricsStage = false
+                )
+            }
+        }
+
+        fun computeEdgeDissolutionAlphas(
+            scrollOffsetPx: Int,
+            maxScrollRangePx: Int,
+            fadeZonePx: Float,
+            hasLines: Boolean
+        ): Pair<Float, Float> {
+            if (!hasLines || fadeZonePx <= 0f) return 0f to 0f
+            val clampedOffset = scrollOffsetPx.coerceAtLeast(0)
+            val topAlpha = (clampedOffset.toFloat() / fadeZonePx).coerceIn(0f, 1f)
+            val remaining = (maxScrollRangePx - clampedOffset).coerceAtLeast(0)
+            val bottomAlpha = (remaining.toFloat() / fadeZonePx).coerceIn(0f, 1f)
+            return topAlpha to bottomAlpha
+        }
+    }
+
     var onOpenAudioLab: (() -> Unit)? = null
     var onToggleAmoled: (() -> Unit)? = null
     var onSaveLyricOffset: ((Track, Long) -> Unit)? = null
@@ -282,6 +357,9 @@ class NowPlayingView(
 
     private var topInsetPx: Int = 0
     private var bottomInsetPx: Int = 0
+    private val morphLocA = IntArray(2)
+    private val morphLocB = IntArray(2)
+    private var activeMorphPreDrawListener: ViewTreeObserver.OnPreDrawListener? = null
 
     private val contentColumn = LinearLayout(context)
 
@@ -293,6 +371,15 @@ class NowPlayingView(
     private val qualityBadgeGlass = LiquidGlassDrawable(context, 14f)
     private val routeBadgeView = TextView(context)
 
+    // Floating Mini Header (shown when Lyrics mode is active)
+    private val lyricsMiniHeader = LinearLayout(context)
+    private val miniCoverFrame = FrameLayout(context)
+    private val miniCoverPlaceholder = ImageView(context)
+    private val miniCoverImage = ImageView(context)
+    private val miniTitleCol = LinearLayout(context)
+    private val miniTrackTitleView = TextView(context)
+    private val miniTrackArtistView = TextView(context)
+
     private val stageFrame = FrameLayout(context)
     private val coverContainer = FrameLayout(context)
     private val coverCard = FrameLayout(context)
@@ -302,9 +389,7 @@ class NowPlayingView(
     private val vinylDiscView = VinylDiscVisualizerView(context)
 
     private val lyricsContainer = FrameLayout(context)
-    private val lyricsRecycler = RecyclerView(context)
-    private val lyricsTopDissolution = View(context)
-    private val lyricsBottomDissolution = View(context)
+    private val lyricsRecycler = LyricsMaskRecyclerView(context)
     private val lyricsEmptyContainer = LinearLayout(context)
     private val lyricsEmptyView = TextView(context)
     private val lyricsFetchStatusView = TextView(context)
@@ -348,6 +433,7 @@ class NowPlayingView(
     private val bottomControlDock = LinearLayout(context)
 
     // Dock Row 1: Track info + Favorit + Antrean
+    private val dockTrackRow = LinearLayout(context)
     private val trackTitleView = TextView(context)
     private val trackArtistView = TextView(context)
     private val favoriteButton = ImageButton(context)
@@ -642,10 +728,16 @@ class NowPlayingView(
             coverImage.setImageBitmap(bitmap)
             coverImage.visibility = View.VISIBLE
             coverPlaceholder.visibility = View.GONE
+            miniCoverImage.setImageBitmap(bitmap)
+            miniCoverImage.visibility = View.VISIBLE
+            miniCoverPlaceholder.visibility = View.GONE
         } else {
             coverImage.setImageBitmap(null)
             coverImage.visibility = View.GONE
             coverPlaceholder.visibility = View.VISIBLE
+            miniCoverImage.setImageBitmap(null)
+            miniCoverImage.visibility = View.GONE
+            miniCoverPlaceholder.visibility = View.VISIBLE
         }
     }
 
@@ -722,6 +814,8 @@ class NowPlayingView(
             albumTitleView.text = context.getString(R.string.app_name)
             trackTitleView.text = context.getString(R.string.unknown_title)
             trackArtistView.text = context.getString(R.string.unknown_artist)
+            miniTrackTitleView.text = context.getString(R.string.unknown_title)
+            miniTrackArtistView.text = context.getString(R.string.unknown_artist)
             currentQualityInfo = AudioQualityInfo()
             currentAuditStatus = LosslessAuditStatus.NOT_APPLICABLE
             qualityBadgeView.visibility = View.GONE
@@ -740,9 +834,13 @@ class NowPlayingView(
 
         plainLyricsFallback = null
         setLyricFetchStatus(null, isLoading = false)
+        val titleStr = track.title.ifBlank { context.getString(R.string.unknown_title) }
+        val artistStr = track.artist.ifBlank { context.getString(R.string.unknown_artist) }
         albumTitleView.text = track.album.ifBlank { context.getString(R.string.unknown_album) }
-        trackTitleView.text = track.title.ifBlank { context.getString(R.string.unknown_title) }
-        trackArtistView.text = track.artist.ifBlank { context.getString(R.string.unknown_artist) }
+        trackTitleView.text = titleStr
+        trackArtistView.text = artistStr
+        miniTrackTitleView.text = titleStr
+        miniTrackArtistView.text = artistStr
         seekWaveformView.setChapters(track.chapters)
         seekWaveformView.setTrackKey(track.contentUri.ifBlank { track.path })
         onQualityChanged(track.quality)
@@ -854,6 +952,8 @@ class NowPlayingView(
         mainHandler.removeCallbacks(playDwellRunnable)
         mainHandler.removeCallbacks(sleepDisplayTicker)
         lyricsAdapter.cancelScrollAnimation(lyricsRecycler)
+        clearPendingMorphPreDraw()
+        SpringAnimatorHelper.cancelSpring(this, CHANNEL_CHROME_MORPH)
         SpringAnimatorHelper.cancelSpring(this, CHANNEL_AMOLED)
         SpringAnimatorHelper.cancelSpring(playLoupeView)
         SpringAnimatorHelper.cancelSpring(playPauseButton, CHANNEL_PLAY_DRAG)
@@ -934,6 +1034,80 @@ class NowPlayingView(
         )
         topDisplayZone.addView(passiveHeader, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
 
+        val miniCoverSize = dp(LyricsMorphSpec.MINI_COVER_SIZE_DP.toInt())
+        val miniOutline = object : ViewOutlineProvider() {
+            override fun getOutline(view: View, outline: Outline) {
+                outline.setRoundRect(
+                    0,
+                    0,
+                    view.width,
+                    view.height,
+                    LyricsMorphSpec.MINI_COVER_CORNER_RADIUS_DP * density
+                )
+            }
+        }
+        miniCoverFrame.apply {
+            outlineProvider = miniOutline
+            clipToOutline = true
+            elevation = 4f * density
+            SpringAnimatorHelper.attachPressFeedback(this)
+            setOnClickListener {
+                setDisplayMode(DisplayMode.FULL_COVER, animate = true, syncScrub = true)
+            }
+        }
+        miniCoverPlaceholder.apply {
+            setImageResource(R.drawable.ic_default_album_cover)
+            scaleType = ImageView.ScaleType.CENTER_CROP
+        }
+        miniCoverImage.apply {
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            visibility = View.GONE
+        }
+        miniCoverFrame.addView(miniCoverPlaceholder, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+        miniCoverFrame.addView(miniCoverImage, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+
+        miniTitleCol.apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        miniTrackTitleView.apply {
+            setTextColor(0xFFFFFFFF.toInt())
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, LyricsMorphSpec.MINI_TITLE_SIZE_SP)
+            typeface = Typeface.create("sans-serif", Typeface.BOLD)
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+        }
+        miniTrackArtistView.apply {
+            setTextColor(0xFFFFFFFF.toInt())
+            alpha = LyricsMorphSpec.MINI_ARTIST_ALPHA
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, LyricsMorphSpec.MINI_ARTIST_SIZE_SP)
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+        }
+        miniTitleCol.addView(miniTrackTitleView, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
+        miniTitleCol.addView(
+            miniTrackArtistView,
+            LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply {
+                topMargin = dp(1)
+            }
+        )
+
+        lyricsMiniHeader.apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(4), dp(2), dp(4), dp(6))
+            visibility = View.GONE
+            addView(miniCoverFrame, LinearLayout.LayoutParams(miniCoverSize, miniCoverSize))
+            addView(
+                miniTitleCol,
+                LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f).apply {
+                    marginStart = dp(12)
+                }
+            )
+        }
+        topDisplayZone.addView(lyricsMiniHeader, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
+
         buildCenterStage()
         topDisplayZone.addView(
             stageFrame,
@@ -946,23 +1120,27 @@ class NowPlayingView(
         var downY = 0f
         var downX = 0f
         var coverSwipeHandled = false
-        passiveHeader.setOnTouchListener { _, event ->
-            when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    downX = event.x
-                    downY = event.y
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    val dy = event.y - downY
-                    val dx = event.x - downX
-                    if (dy > touchSlop * 5 && dy > abs(dx) * 1.4f) {
-                        onCollapse()
-                        return@setOnTouchListener true
+        val attachSwipeCollapse: (View) -> Unit = { target ->
+            target.setOnTouchListener { _, event ->
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        downX = event.x
+                        downY = event.y
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        val dy = event.y - downY
+                        val dx = event.x - downX
+                        if (dy > touchSlop * 5 && dy > abs(dx) * 1.4f) {
+                            onCollapse()
+                            return@setOnTouchListener true
+                        }
                     }
                 }
+                false
             }
-            false
         }
+        attachSwipeCollapse(passiveHeader)
+        attachSwipeCollapse(lyricsMiniHeader)
         coverContainer.setOnTouchListener { _, event ->
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
@@ -1107,14 +1285,13 @@ class NowPlayingView(
             }
         })
 
-        val defaultFadePx = dp(44)
+        val defaultFadePx = dp(48)
         lyricsRecycler.apply {
             layoutManager = LinearLayoutManager(context)
             adapter = lyricsAdapter
             itemAnimator = null
             clipToPadding = false
-            isVerticalFadingEdgeEnabled = true
-            setFadingEdgeLength(defaultFadePx)
+            isVerticalFadingEdgeEnabled = false
             addOnLayoutChangeListener { rv, _, top, _, bottom, _, _, _, _ ->
                 val h = bottom - top
                 if (h > 0) {
@@ -1124,7 +1301,15 @@ class NowPlayingView(
                         bottomPx = dp(64),
                         defaultFadeLengthPx = defaultFadePx
                     )
-                    val recycler = rv as RecyclerView
+                    val recycler = rv as LyricsMaskRecyclerView
+                    val maxRange = (recycler.computeVerticalScrollRange() - h).coerceAtLeast(0)
+                    val (topAlpha, bottomAlpha) = LyricsMorphSpec.computeEdgeDissolutionAlphas(
+                        scrollOffsetPx = recycler.computeVerticalScrollOffset(),
+                        maxScrollRangePx = maxRange,
+                        fadeZonePx = defaultFadePx.toFloat(),
+                        hasLines = lyricsAdapter.itemCount > 0
+                    )
+                    recycler.setEdgeDissolutionStrengths(topAlpha, bottomAlpha)
                     if (pendingInitialLyricSnap && lyricsAdapter.getLines().isNotEmpty()) {
                         pendingInitialLyricSnap = false
                         rv.post {
@@ -1135,12 +1320,14 @@ class NowPlayingView(
             }
             addOnScrollListener(object : RecyclerView.OnScrollListener() {
                 override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
-                    val topAlpha = SpringAnimatorHelper.ScrollEdgeMath.computeDissolutionProgress(
-                        recyclerView.computeVerticalScrollOffset(),
-                        dp(40).toFloat()
+                    val maxRange = (recyclerView.computeVerticalScrollRange() - recyclerView.height).coerceAtLeast(0)
+                    val (topAlpha, bottomAlpha) = LyricsMorphSpec.computeEdgeDissolutionAlphas(
+                        scrollOffsetPx = recyclerView.computeVerticalScrollOffset(),
+                        maxScrollRangePx = maxRange,
+                        fadeZonePx = defaultFadePx.toFloat(),
+                        hasLines = lyricsAdapter.itemCount > 0
                     )
-                    lyricsTopDissolution.alpha = topAlpha
-                    lyricsBottomDissolution.alpha = if (recyclerView.canScrollVertically(1)) 1f else 0f
+                    (recyclerView as? LyricsMaskRecyclerView)?.setEdgeDissolutionStrengths(topAlpha, bottomAlpha)
                 }
 
                 override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
@@ -1422,23 +1609,7 @@ class NowPlayingView(
             LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT)
         )
 
-        lyricsTopDissolution.apply {
-            background = GradientDrawable(
-                GradientDrawable.Orientation.TOP_BOTTOM,
-                intArrayOf(0xAA000000.toInt(), 0x00000000)
-            )
-            alpha = 0f
-        }
-        lyricsBottomDissolution.apply {
-            background = GradientDrawable(
-                GradientDrawable.Orientation.BOTTOM_TOP,
-                intArrayOf(0xAA000000.toInt(), 0x00000000)
-            )
-            alpha = 0f
-        }
         lyricsContainer.addView(lyricsRecycler, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
-        lyricsContainer.addView(lyricsTopDissolution, LayoutParams(LayoutParams.MATCH_PARENT, dp(28), Gravity.TOP))
-        lyricsContainer.addView(lyricsBottomDissolution, LayoutParams(LayoutParams.MATCH_PARENT, dp(28), Gravity.BOTTOM))
         lyricsContainer.addView(lyricsEmptyContainer, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, Gravity.CENTER))
         lyricsContainer.addView(
             bottomLyricOverlay,
@@ -1580,11 +1751,12 @@ class NowPlayingView(
 
     private fun setZenMode(enabled: Boolean) {
         zenModeActive = enabled
+        val activeHeader = if (displayMode == DisplayMode.LYRICS_FOCUS) lyricsMiniHeader else passiveHeader
         if (enabled) {
-            SpringAnimatorHelper.springDismiss(passiveHeader, toTranslationY = -dp(12).toFloat(), toScale = 0.98f)
+            SpringAnimatorHelper.springDismiss(activeHeader, toTranslationY = -dp(12).toFloat(), toScale = 0.98f)
             SpringAnimatorHelper.springDismiss(bottomControlDock, toTranslationY = dp(18).toFloat(), toScale = 0.98f)
         } else {
-            SpringAnimatorHelper.springReveal(passiveHeader, fromTranslationY = -dp(12).toFloat(), fromScale = 0.98f)
+            SpringAnimatorHelper.springReveal(activeHeader, fromTranslationY = -dp(12).toFloat(), fromScale = 0.98f)
             SpringAnimatorHelper.springReveal(bottomControlDock, fromTranslationY = dp(18).toFloat(), fromScale = 0.98f)
         }
         updateLyricTunerVisibility(animate = true)
@@ -1597,7 +1769,7 @@ class NowPlayingView(
         bottomControlDock.setPadding(0, dp(4), 0, 0)
 
         // Dock 1: Track Title & Artist + quick Favorit & Antrean (>= 48dp touch targets)
-        val trackRow = LinearLayout(context).apply {
+        dockTrackRow.apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
@@ -1646,15 +1818,15 @@ class NowPlayingView(
             setOnClickListener { showQueueOverlay() }
         }
 
-        trackRow.addView(titleCol, LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f).apply {
+        dockTrackRow.addView(titleCol, LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f).apply {
             marginEnd = dp(8)
         })
-        trackRow.addView(favoriteButton, LinearLayout.LayoutParams(dp(48), dp(48)).apply {
+        dockTrackRow.addView(favoriteButton, LinearLayout.LayoutParams(dp(48), dp(48)).apply {
             marginEnd = dp(8)
         })
-        trackRow.addView(queueButton, LinearLayout.LayoutParams(dp(48), dp(48)))
+        dockTrackRow.addView(queueButton, LinearLayout.LayoutParams(dp(48), dp(48)))
         bottomControlDock.addView(
-            trackRow,
+            dockTrackRow,
             LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply {
                 bottomMargin = dp(10)
             }
@@ -2061,6 +2233,38 @@ class NowPlayingView(
         addView(modalBackdrop, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
     }
 
+    private fun clearPendingMorphPreDraw() {
+        val listener = activeMorphPreDrawListener ?: return
+        activeMorphPreDrawListener = null
+        if (viewTreeObserver.isAlive) {
+            viewTreeObserver.removeOnPreDrawListener(listener)
+        }
+    }
+
+    private fun resetChromeMorphProperties() {
+        passiveHeader.alpha = 1f
+        passiveHeader.translationY = 0f
+        passiveHeader.scaleX = 1f
+        passiveHeader.scaleY = 1f
+        lyricsMiniHeader.alpha = 1f
+        lyricsMiniHeader.translationY = 0f
+        miniCoverFrame.translationX = 0f
+        miniCoverFrame.translationY = 0f
+        miniCoverFrame.scaleX = 1f
+        miniCoverFrame.scaleY = 1f
+        miniTitleCol.alpha = 1f
+        miniTitleCol.translationY = 0f
+        coverCard.translationX = 0f
+        coverCard.translationY = 0f
+        coverCard.scaleX = 1f
+        coverCard.scaleY = 1f
+        dockTrackRow.alpha = 1f
+        dockTrackRow.translationY = 0f
+        secondaryDockRow.alpha = 1f
+        secondaryDockRow.translationY = 0f
+        bottomControlDock.translationY = 0f
+    }
+
     private fun setDisplayMode(mode: DisplayMode, animate: Boolean, syncScrub: Boolean = true) {
         val prevMode = displayMode
         displayMode = mode
@@ -2080,19 +2284,135 @@ class NowPlayingView(
         val direction = (mode.ordinal - prevMode.ordinal).coerceIn(-1, 1).toFloat()
         val shiftPx = direction * dp(22)
 
+        val chrome = LyricsMorphSpec.resolveChromeState(mode, zenModeActive)
+        val enteringLyrics = mode == DisplayMode.LYRICS_FOCUS && prevMode != DisplayMode.LYRICS_FOCUS
+        val leavingLyrics = prevMode == DisplayMode.LYRICS_FOCUS && mode != DisplayMode.LYRICS_FOCUS
+        val morphChrome = (enteringLyrics || leavingLyrics) &&
+            animate &&
+            !SpringAnimatorHelper.isReducedMotionEnabled(context)
+
+        clearPendingMorphPreDraw()
+        SpringAnimatorHelper.cancelSpring(this, CHANNEL_CHROME_MORPH)
+
+        var oldDockTop = 0
+        var oldArtCenterX = 0f
+        var oldArtCenterY = 0f
+        var oldArtSize = 0f
+        var hasOldArtBounds = false
+        if (morphChrome && isLaidOut) {
+            oldDockTop = bottomControlDock.top
+            if (enteringLyrics && prevMode == DisplayMode.FULL_COVER && coverCard.width > 0) {
+                coverCard.getLocationInWindow(morphLocA)
+                oldArtCenterX = morphLocA[0] + coverCard.width * 0.5f
+                oldArtCenterY = morphLocA[1] + coverCard.height * 0.5f
+                oldArtSize = coverCard.width.toFloat()
+                hasOldArtBounds = true
+            } else if (leavingLyrics && mode == DisplayMode.FULL_COVER && miniCoverFrame.width > 0) {
+                miniCoverFrame.getLocationInWindow(morphLocA)
+                oldArtCenterX = morphLocA[0] + miniCoverFrame.width * 0.5f
+                oldArtCenterY = morphLocA[1] + miniCoverFrame.height * 0.5f
+                oldArtSize = miniCoverFrame.width.toFloat()
+                hasOldArtBounds = true
+            }
+        }
+
+        passiveHeader.visibility = if (chrome.showPassiveHeader) View.VISIBLE else View.GONE
+        lyricsMiniHeader.visibility = if (chrome.showMiniHeader) View.VISIBLE else View.GONE
+        dockTrackRow.visibility = if (chrome.showDockTrackRow) View.VISIBLE else View.GONE
+        secondaryDockRow.visibility = if (chrome.showSecondaryDockRow) View.VISIBLE else View.GONE
+
+        if (morphChrome && isLaidOut) {
+            val preDraw = object : ViewTreeObserver.OnPreDrawListener {
+                override fun onPreDraw(): Boolean {
+                    if (viewTreeObserver.isAlive) {
+                        viewTreeObserver.removeOnPreDrawListener(this)
+                    }
+                    if (activeMorphPreDrawListener === this) {
+                        activeMorphPreDrawListener = null
+                    }
+                    val dockDeltaY = (oldDockTop - bottomControlDock.top).toFloat()
+                    var artDx = 0f
+                    var artDy = 0f
+                    var artFromScale = 1f
+                    var animateArtView: View? = null
+
+                    if (enteringLyrics && hasOldArtBounds && miniCoverFrame.width > 0) {
+                        miniCoverFrame.getLocationInWindow(morphLocB)
+                        val newCx = morphLocB[0] + miniCoverFrame.width * 0.5f
+                        val newCy = morphLocB[1] + miniCoverFrame.height * 0.5f
+                        artDx = oldArtCenterX - newCx
+                        artDy = oldArtCenterY - newCy
+                        artFromScale = (oldArtSize / miniCoverFrame.width.toFloat()).coerceIn(1f, 5f)
+                        animateArtView = miniCoverFrame
+                    } else if (leavingLyrics && hasOldArtBounds && coverCard.width > 0) {
+                        coverCard.getLocationInWindow(morphLocB)
+                        val newCx = morphLocB[0] + coverCard.width * 0.5f
+                        val newCy = morphLocB[1] + coverCard.height * 0.5f
+                        artDx = oldArtCenterX - newCx
+                        artDy = oldArtCenterY - newCy
+                        artFromScale = (oldArtSize / coverCard.width.toFloat()).coerceIn(0.18f, 1f)
+                        animateArtView = coverCard
+                    }
+
+                    val smooth = SpringAnimatorHelper.SPRING_SMOOTH
+                    SpringAnimatorHelper.animateSpring(
+                        key = this@NowPlayingView,
+                        start = 0f,
+                        target = 1f,
+                        stiffness = smooth.stiffness,
+                        dampingRatio = smooth.dampingRatio,
+                        channel = CHANNEL_CHROME_MORPH,
+                        onUpdate = { p ->
+                            val inv = 1f - p
+                            val clamped = p.coerceIn(0f, 1f)
+                            bottomControlDock.translationY = dockDeltaY * inv
+                            animateArtView?.let { artView ->
+                                artView.translationX = artDx * inv
+                                artView.translationY = artDy * inv
+                                val s = artFromScale + (1f - artFromScale) * p
+                                artView.scaleX = s
+                                artView.scaleY = s
+                            }
+                            if (enteringLyrics) {
+                                miniTitleCol.alpha = clamped
+                                miniTitleCol.translationY = dp(10) * inv
+                            } else {
+                                passiveHeader.alpha = clamped
+                                passiveHeader.translationY = -dp(10) * inv
+                                dockTrackRow.alpha = clamped
+                                dockTrackRow.translationY = dp(12) * inv
+                                secondaryDockRow.alpha = clamped
+                                secondaryDockRow.translationY = dp(16) * inv
+                            }
+                        },
+                        onEnd = { resetChromeMorphProperties() }
+                    )
+                    return true
+                }
+            }
+            activeMorphPreDrawListener = preDraw
+            viewTreeObserver.addOnPreDrawListener(preDraw)
+        } else {
+            resetChromeMorphProperties()
+        }
+
         if (animate) {
             for (v in allViews) {
                 if (v === targetView) {
                     SpringAnimatorHelper.springReveal(
                         v,
                         fromTranslationX = shiftPx,
-                        fromScale = 0.96f
+                        fromScale = 0.96f,
+                        stiffness = SpringAnimatorHelper.SPRING_SMOOTH.stiffness,
+                        dampingRatio = SpringAnimatorHelper.SPRING_SMOOTH.dampingRatio
                     )
                 } else if (v.visibility == View.VISIBLE) {
                     SpringAnimatorHelper.springDismiss(
                         v,
                         toTranslationX = -shiftPx * 0.6f,
-                        toScale = 0.96f
+                        toScale = 0.96f,
+                        stiffness = SpringAnimatorHelper.SPRING_SMOOTH.stiffness,
+                        dampingRatio = SpringAnimatorHelper.SPRING_SMOOTH.dampingRatio
                     )
                 }
             }
@@ -2629,6 +2949,67 @@ class NowPlayingView(
         }
     }
 
+    private class LyricsMaskRecyclerView(context: Context) : RecyclerView(context) {
+        private var topDissolutionStrength: Float = 0f
+        private var bottomDissolutionStrength: Float = 0f
+        private val topFadePx: Float = 52f * resources.displayMetrics.density
+        private val bottomFadePx: Float = 60f * resources.displayMetrics.density
+        private val maskPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_OUT)
+        }
+        private val topGradient = LinearGradient(
+            0f, 0f, 0f, 1f,
+            0xFFFFFFFF.toInt(), 0x00FFFFFF,
+            Shader.TileMode.CLAMP
+        )
+        private val bottomGradient = LinearGradient(
+            0f, 0f, 0f, 1f,
+            0x00FFFFFF, 0xFFFFFFFF.toInt(),
+            Shader.TileMode.CLAMP
+        )
+        private val topMatrix = Matrix()
+        private val bottomMatrix = Matrix()
+
+        init {
+            setLayerType(LAYER_TYPE_HARDWARE, null)
+        }
+
+        fun setEdgeDissolutionStrengths(topStrength: Float, bottomStrength: Float) {
+            val topClamped = topStrength.coerceIn(0f, 1f)
+            val bottomClamped = bottomStrength.coerceIn(0f, 1f)
+            if (topDissolutionStrength == topClamped && bottomDissolutionStrength == bottomClamped) return
+            topDissolutionStrength = topClamped
+            bottomDissolutionStrength = bottomClamped
+            invalidate()
+        }
+
+        override fun dispatchDraw(canvas: Canvas) {
+            super.dispatchDraw(canvas)
+            val w = width
+            val h = height
+            if (w <= 0 || h <= 0) return
+
+            if (topDissolutionStrength > 0.01f) {
+                val bandH = topFadePx.coerceAtMost(h * 0.25f)
+                topMatrix.setScale(1f, bandH)
+                topGradient.setLocalMatrix(topMatrix)
+                maskPaint.shader = topGradient
+                maskPaint.alpha = (topDissolutionStrength * 255f).toInt().coerceIn(0, 255)
+                canvas.drawRect(0f, 0f, w.toFloat(), bandH, maskPaint)
+            }
+            if (bottomDissolutionStrength > 0.01f) {
+                val bandH = bottomFadePx.coerceAtMost(h * 0.28f)
+                val y0 = h.toFloat() - bandH
+                bottomMatrix.setScale(1f, bandH)
+                bottomMatrix.postTranslate(0f, y0)
+                bottomGradient.setLocalMatrix(bottomMatrix)
+                maskPaint.shader = bottomGradient
+                maskPaint.alpha = (bottomDissolutionStrength * 255f).toInt().coerceIn(0, 255)
+                canvas.drawRect(0f, y0, w.toFloat(), h.toFloat(), maskPaint)
+            }
+        }
+    }
+
     private companion object {
         const val AUTO_RESUME_DELAY_MS = LyricMotionSpec.MANUAL_SCROLL_PAUSE_MS
         const val PREFS_NAME = "laguku_prefs"
@@ -2636,5 +3017,6 @@ class NowPlayingView(
         const val CHANNEL_PLAY_DRAG = 21
         const val CHANNEL_AMOLED = 22
         const val CHANNEL_ARTIST_SLIDE = 23
+        const val CHANNEL_CHROME_MORPH = 24
     }
 }
