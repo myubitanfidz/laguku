@@ -21,25 +21,14 @@ object BinaryTagReader {
     private const val PICTURE_TYPE_FRONT_COVER = 3
 
     fun read(file: File): TagMetadata {
-        val embedded = if (file.exists() && file.isFile && file.canRead()) {
-            try {
-                RandomAccessFile(file, "r").use { raf ->
-                    readFromSource(RafSource(raf), file.extension.lowercase())
-                }
-            } catch (_: Exception) {
-                TagMetadata()
-            }
-        } else {
-            TagMetadata()
-        }
+        val embedded = readEmbedded(file)
 
         val parent = file.parentFile ?: return embedded
         var lyrics = embedded.lyrics
         var artwork = embedded.artworkBytes
 
         if (lyrics == null) {
-            val lrcFile = File(parent, "${file.nameWithoutExtension}.lrc")
-            lyrics = readTextSidecar(lrcFile)
+            lyrics = readSidecarLrc(file)
         }
         if (artwork == null) {
             artwork = readArtworkSidecar(parent)
@@ -50,6 +39,25 @@ object BinaryTagReader {
         } else {
             embedded
         }
+    }
+
+    /**
+     * Reads only embedded binary tags from [file] (no sidecar lookups), enforcing strict bounds.
+     */
+    fun readEmbedded(file: File): TagMetadata {
+        if (!file.exists() || !file.isFile || !file.canRead()) return TagMetadata()
+        return try {
+            RandomAccessFile(file, "r").use { raf ->
+                readFromSource(RafSource(raf), file.extension.lowercase())
+            }
+        } catch (_: Exception) {
+            TagMetadata()
+        }
+    }
+
+    fun readSidecarLrc(audioFile: File): String? {
+        val parent = audioFile.parentFile ?: return null
+        return readTextSidecar(File(parent, "${audioFile.nameWithoutExtension}.lrc"))
     }
 
     fun readFromBytes(data: ByteArray, extension: String = ""): TagMetadata {
@@ -75,7 +83,7 @@ object BinaryTagReader {
         }
     }
 
-    private fun readArtworkSidecar(dir: File): ByteArray? {
+    fun readArtworkSidecar(dir: File): ByteArray? {
         val candidates = arrayOf("cover.jpg", "folder.jpg", "Cover.jpg", "Folder.jpg")
         for (name in candidates) {
             val f = File(dir, name)

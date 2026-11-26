@@ -99,8 +99,13 @@ object LyricCardRenderer {
 
             // Selected lyric lines
             val quoteText = lines.take(4).joinToString("\n\n") { line ->
-                val tr = line.translation?.takeIf { it.isNotBlank() }
-                if (tr != null) "${line.text}\n$tr" else line.text
+                val rom = line.romanizedText?.takeIf { it.isNotBlank() }
+                val tr = line.translatedText?.takeIf { it.isNotBlank() }
+                buildString {
+                    append(line.primaryText)
+                    if (rom != null) append('\n').append(rom)
+                    if (tr != null) append('\n').append(tr)
+                }
             }
             val quotePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = 0xFFFFFFFF.toInt()

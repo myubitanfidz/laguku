@@ -120,4 +120,8 @@
     <string name="tap_sync_save_lrc">Simpan .lrc</string>
     <string name="tap_sync_progress_fmt">Baris %1$d / %2$d</string>
     <string name="tap_sync_done_preview">Semua baris selesai ditandai</string>
+    <string name="lyric_source_fmt">Sumber: %1$s</string>
+    <string name="pin_widget_label">Pasang Widget ke Layar Utama</string>
+    <string name="pin_widget_requested">Permintaan widget dikirim ke layar utama</string>
+    <string name="pin_widget_unsupported">Launcher tidak mendukung pasang otomatis; tambahkan widget Laguku secara manual</string>
 </resources>

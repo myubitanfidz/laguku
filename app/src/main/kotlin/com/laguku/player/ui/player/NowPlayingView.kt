@@ -13,6 +13,7 @@ import android.text.TextUtils
 import android.util.TypedValue
 import android.view.GestureDetector
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
@@ -33,6 +34,7 @@ import com.laguku.player.model.AudioQualityInfo
 import com.laguku.player.model.CoverPalette
 import com.laguku.player.model.LosslessAuditStatus
 import com.laguku.player.model.LyricLine
+import com.laguku.player.model.LyricSource
 import com.laguku.player.model.ParsedLyrics
 import com.laguku.player.model.RepeatMode
 import com.laguku.player.model.Track
@@ -60,6 +62,33 @@ class NowPlayingView(
 ) : FrameLayout(context) {
 
     enum class DisplayMode { FULL_COVER, VINYL_DISC, LYRICS_FOCUS }
+
+    object PlayDragMath {
+        const val DRAG_THRESHOLD_DP = 44f
+        const val MAX_OFFSET_DP = 58f
+
+        fun computeRubberBandOffset(rawDxPx: Float, thresholdPx: Float, maxOffsetPx: Float): Float {
+            if (thresholdPx <= 0f || maxOffsetPx <= 0f) return 0f
+            val sign = if (rawDxPx >= 0f) 1f else -1f
+            val absDx = abs(rawDxPx)
+            val baseAtThreshold = thresholdPx * 0.85f
+            if (absDx <= thresholdPx) {
+                return rawDxPx * 0.85f
+            }
+            val extra = absDx - thresholdPx
+            val headroom = (maxOffsetPx - baseAtThreshold).coerceAtLeast(1f)
+            val dampedExtra = headroom * (extra / (extra + headroom * 1.4f))
+            return sign * (baseAtThreshold + dampedExtra)
+        }
+
+        fun resolveDragDirection(rawDxPx: Float, thresholdPx: Float): Int {
+            return when {
+                rawDxPx >= thresholdPx -> 1
+                rawDxPx <= -thresholdPx -> -1
+                else -> 0
+            }
+        }
+    }
 
     class LyricTunerState(initialExpanded: Boolean = false) {
         var isExpanded: Boolean = initialExpanded
@@ -122,8 +151,18 @@ class NowPlayingView(
     private var currentAuditStatus: LosslessAuditStatus = LosslessAuditStatus.NOT_APPLICABLE
     private var currentQualityInfo: AudioQualityInfo = AudioQualityInfo()
     private var amoledEnabled: Boolean = false
+    private var amoledProgress: Float = 0f
     private var zenModeActive: Boolean = false
     private var hostActive: Boolean = true
+    private var pendingTrackDirection: Int = 0
+    private var lastAnimatedTrackPath: String? = null
+
+    private var playDragDownRawX: Float = 0f
+    private var playDragDownRawY: Float = 0f
+    private var isPlayDragging: Boolean = false
+    private var playDragThresholdCrossed: Boolean = false
+    private val playDragThresholdPx: Float = PlayDragMath.DRAG_THRESHOLD_DP * density
+    private val playDragMaxOffsetPx: Float = PlayDragMath.MAX_OFFSET_DP * density
 
     private var topInsetPx: Int = 0
     private var bottomInsetPx: Int = 0
@@ -164,10 +203,13 @@ class NowPlayingView(
     private val lyricTunerToggleGlass = LiquidGlassDrawable(context, 24f)
     private val lyricTunerPanel = LinearLayout(context)
     private val lyricTunerPanelGlass = LiquidGlassDrawable(context, 18f)
+    private val lyricSourceBadgeTv = TextView(context)
+    private val offsetRow = LinearLayout(context)
     private val offsetMinusBtn = TextView(context)
     private val offsetValueTv = TextView(context)
     private val offsetPlusBtn = TextView(context)
     private val offsetSaveBtn = TextView(context)
+    private val anchorRow = LinearLayout(context)
     private val anchorTopBtn = TextView(context)
     private val anchorOptimalBtn = TextView(context)
     private val anchorCenterBtn = TextView(context)
@@ -195,14 +237,14 @@ class NowPlayingView(
     private val dockIconGlassFav = LiquidGlassDrawable(context, 16f)
     private val dockIconGlassQueue = LiquidGlassDrawable(context, 16f)
 
-    // Dock Row 2: SeekCapsuleView
-    private val seekCapsuleView = SeekCapsuleView(context)
+    // Dock Row 2: WaveformPillSeekBarView
+    private val seekWaveformView = WaveformPillSeekBarView(context)
 
     // Dock Row 3: 5 Transport Controls
     private val shuffleButton = ImageButton(context)
     private val prevButton = ImageButton(context)
     private val playPauseButton = ImageButton(context)
-    private val playPauseGlass = LiquidGlassDrawable(context, 26f)
+    private val playPauseGlass = LiquidGlassDrawable(context, 32f)
     private val nextButton = ImageButton(context)
     private val repeatButton = ImageButton(context)
 
@@ -316,11 +358,11 @@ class NowPlayingView(
     }
 
     fun setWaveform(bars: FloatArray?) {
-        seekCapsuleView.setWaveform(bars)
+        seekWaveformView.setWaveform(bars)
     }
 
     fun setAbLoop(startMs: Long?, endMs: Long?) {
-        seekCapsuleView.setAbLoop(startMs, endMs)
+        seekWaveformView.setAbLoop(startMs, endMs)
     }
 
     fun setLyricOffsets(userOffsetMs: Long, btOffsetMs: Long) {
@@ -341,10 +383,47 @@ class NowPlayingView(
         }
     }
 
-    fun setAmoledMode(enabled: Boolean) {
+    fun setAmoledMode(enabled: Boolean, animate: Boolean = true) {
         amoledEnabled = enabled
-        setBackgroundColor(if (enabled) 0xFF000000.toInt() else 0x00000000)
+        val target = if (enabled) 1f else 0f
+        if (!animate || SpringAnimatorHelper.isReducedMotionEnabled(context)) {
+            SpringAnimatorHelper.cancelSpring(this, CHANNEL_AMOLED)
+            applyAmoledProgressToGlass(target)
+        } else {
+            SpringAnimatorHelper.animateSpring(
+                key = this,
+                start = amoledProgress,
+                target = target,
+                stiffness = SpringAnimatorHelper.AmoledTransitionMath.AMOLED_STIFFNESS,
+                dampingRatio = SpringAnimatorHelper.AmoledTransitionMath.AMOLED_DAMPING_RATIO,
+                channel = CHANNEL_AMOLED,
+                onUpdate = { p -> applyAmoledProgressToGlass(p) }
+            )
+        }
         updateSecondaryPillStates()
+    }
+
+    private fun applyAmoledProgressToGlass(progress: Float) {
+        amoledProgress = progress.coerceIn(0f, 1f)
+        qualityBadgeGlass.setAmoledProgress(amoledProgress)
+        coverGlass.setAmoledProgress(amoledProgress)
+        returnPillGlass.setAmoledProgress(amoledProgress)
+        lyricTunerToggleGlass.setAmoledProgress(amoledProgress)
+        lyricTunerPanelGlass.setAmoledProgress(amoledProgress)
+        searchOnlineGlass.setAmoledProgress(amoledProgress)
+        tapToSyncEmptyGlass.setAmoledProgress(amoledProgress)
+        lyricQuoteGlass.setAmoledProgress(amoledProgress)
+        dockIconGlassFav.setAmoledProgress(amoledProgress)
+        dockIconGlassQueue.setAmoledProgress(amoledProgress)
+        playPauseGlass.setAmoledProgress(amoledProgress)
+        labPillGlass.setAmoledProgress(amoledProgress)
+        timerPillGlass.setAmoledProgress(amoledProgress)
+        amoledPillGlass.setAmoledProgress(amoledProgress)
+        modalCardGlass.setAmoledProgress(amoledProgress)
+        anchorTopGlass.setAmoledProgress(amoledProgress)
+        anchorOptimalGlass.setAmoledProgress(amoledProgress)
+        anchorCenterGlass.setAmoledProgress(amoledProgress)
+        modeScrubPill.invalidate()
     }
 
     fun isZenMode(): Boolean = zenModeActive
@@ -384,6 +463,7 @@ class NowPlayingView(
         returnToActivePill.visibility = View.GONE
         lyricsEmptyContainer.visibility = if (parsed.lines.isEmpty()) View.VISIBLE else View.GONE
         lyricTunerState.onEnterLyricsMode()
+        updateLyricSourceBadge(parsed.source)
         updateLyricTunerVisibility(animate = false)
         lyricQuoteBar.visibility = View.GONE
         updateLyricOffsetDisplay()
@@ -391,6 +471,15 @@ class NowPlayingView(
 
         val currentPos = audioEngine?.getCurrentPositionMs() ?: 0L
         updateActiveLyricForPosition(currentPos, forceScroll = true)
+    }
+
+    private fun updateLyricSourceBadge(source: LyricSource) {
+        if (source == LyricSource.NONE || source.label.isBlank()) {
+            lyricSourceBadgeTv.visibility = View.GONE
+        } else {
+            lyricSourceBadgeTv.text = context.getString(R.string.lyric_source_fmt, source.label)
+            lyricSourceBadgeTv.visibility = View.VISIBLE
+        }
     }
 
     fun setPlainLyricsFallback(text: String?) {
@@ -411,6 +500,8 @@ class NowPlayingView(
 
     fun onTrackChanged(track: Track?) {
         if (track == null) {
+            pendingTrackDirection = 0
+            lastAnimatedTrackPath = null
             plainLyricsFallback = null
             setLyricFetchStatus(null, isLoading = false)
             albumTitleView.text = context.getString(R.string.app_name)
@@ -419,23 +510,84 @@ class NowPlayingView(
             currentQualityInfo = AudioQualityInfo()
             currentAuditStatus = LosslessAuditStatus.NOT_APPLICABLE
             qualityBadgeView.visibility = View.GONE
-            seekCapsuleView.setChapters(emptyList())
-            seekCapsuleView.setWaveform(null)
-            seekCapsuleView.setAbLoop(null, null)
+            seekWaveformView.setChapters(emptyList())
+            seekWaveformView.setWaveform(null)
+            seekWaveformView.setAbLoop(null, null)
             setCoverArtwork(null)
             setLyrics(ParsedLyrics(emptyList(), isSynced = false))
             updateFavoriteButton(null)
             return
         }
+        val dir = pendingTrackDirection
+        pendingTrackDirection = 0
+        val trackChanged = track.path != lastAnimatedTrackPath
+        lastAnimatedTrackPath = track.path
+
         plainLyricsFallback = null
         setLyricFetchStatus(null, isLoading = false)
         albumTitleView.text = track.album.ifBlank { context.getString(R.string.unknown_album) }
         trackTitleView.text = track.title.ifBlank { context.getString(R.string.unknown_title) }
         trackArtistView.text = track.artist.ifBlank { context.getString(R.string.unknown_artist) }
-        seekCapsuleView.setChapters(track.chapters)
+        seekWaveformView.setChapters(track.chapters)
+        seekWaveformView.setTrackKey(track.contentUri.ifBlank { track.path })
         onQualityChanged(track.quality)
         updateFavoriteButton(track)
         updateShuffleAndRepeatState()
+
+        if (trackChanged && dir != 0) {
+            animateDirectionalTrackChange(dir)
+        }
+    }
+
+    private fun triggerTrackNavigation(direction: Int) {
+        pendingTrackDirection = direction.coerceIn(-1, 1)
+        if (pendingTrackDirection > 0) {
+            audioEngine?.next()
+        } else if (pendingTrackDirection < 0) {
+            audioEngine?.previous()
+        }
+    }
+
+    private fun animateDirectionalTrackChange(direction: Int) {
+        if (SpringAnimatorHelper.isReducedMotionEnabled(context)) return
+        val dir = direction.coerceIn(-1, 1)
+        if (displayMode == DisplayMode.FULL_COVER) {
+            SpringAnimatorHelper.springReveal(
+                coverCard,
+                fromTranslationX = dir * dp(32).toFloat(),
+                fromScale = 0.94f
+            )
+        } else if (displayMode == DisplayMode.VINYL_DISC) {
+            vinylDiscView.animateTrackTransition(dir)
+        }
+
+        SpringAnimatorHelper.springReveal(
+            albumTitleView,
+            fromTranslationX = dir * dp(18).toFloat(),
+            fromScale = 1f
+        )
+        SpringAnimatorHelper.springReveal(
+            trackTitleView,
+            fromTranslationX = dir * dp(26).toFloat(),
+            fromScale = 1f
+        )
+
+        val artistStartX = dir * dp(38).toFloat()
+        SpringAnimatorHelper.cancelSpring(trackArtistView, CHANNEL_ARTIST_SLIDE)
+        trackArtistView.alpha = 0f
+        trackArtistView.translationX = artistStartX
+        SpringAnimatorHelper.animateSpring(
+            key = trackArtistView,
+            start = 0f,
+            target = 1f,
+            stiffness = 320f,
+            dampingRatio = 0.84f,
+            channel = CHANNEL_ARTIST_SLIDE,
+            onUpdate = { p ->
+                trackArtistView.alpha = p.coerceIn(0f, 1f)
+                trackArtistView.translationX = artistStartX * (1f - p)
+            }
+        )
     }
 
     fun onPlaybackStateChanged(isPlaying: Boolean) {
@@ -444,7 +596,7 @@ class NowPlayingView(
     }
 
     fun onPositionUpdated(positionMs: Long, durationMs: Long) {
-        seekCapsuleView.setPosition(positionMs, durationMs)
+        seekWaveformView.setPosition(positionMs, durationMs)
         updateActiveLyricForPosition(positionMs, forceScroll = false)
     }
 
@@ -482,6 +634,10 @@ class NowPlayingView(
     override fun onDetachedFromWindow() {
         mainHandler.removeCallbacks(autoResumeRunnable)
         mainHandler.removeCallbacks(sleepDisplayTicker)
+        lyricsAdapter.cancelScrollAnimation(lyricsRecycler)
+        SpringAnimatorHelper.cancelSpring(this, CHANNEL_AMOLED)
+        SpringAnimatorHelper.cancelSpring(playPauseButton, CHANNEL_PLAY_DRAG)
+        SpringAnimatorHelper.cancelSpring(trackArtistView, CHANNEL_ARTIST_SLIDE)
         vinylDiscView.setHostActive(false)
         super.onDetachedFromWindow()
     }
@@ -567,7 +723,8 @@ class NowPlayingView(
 
         var downY = 0f
         var downX = 0f
-        val swipeListener = OnTouchListener { _, event ->
+        var coverSwipeHandled = false
+        passiveHeader.setOnTouchListener { _, event ->
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     downX = event.x
@@ -578,14 +735,39 @@ class NowPlayingView(
                     val dx = event.x - downX
                     if (dy > touchSlop * 5 && dy > abs(dx) * 1.4f) {
                         onCollapse()
-                        return@OnTouchListener true
+                        return@setOnTouchListener true
                     }
                 }
             }
             false
         }
-        passiveHeader.setOnTouchListener(swipeListener)
-        coverContainer.setOnTouchListener(swipeListener)
+        coverContainer.setOnTouchListener { _, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downX = event.x
+                    downY = event.y
+                    coverSwipeHandled = false
+                    return@setOnTouchListener true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    if (!coverSwipeHandled) {
+                        val dy = event.y - downY
+                        val dx = event.x - downX
+                        if (dy > touchSlop * 5 && dy > abs(dx) * 1.4f) {
+                            coverSwipeHandled = true
+                            onCollapse()
+                            return@setOnTouchListener true
+                        }
+                        if (abs(dx) > touchSlop * 4 && abs(dx) > abs(dy) * 1.4f) {
+                            coverSwipeHandled = true
+                            triggerTrackNavigation(if (dx < 0f) 1 else -1)
+                            return@setOnTouchListener true
+                        }
+                    }
+                }
+            }
+            false
+        }
     }
 
     @SuppressLint("ClickableViewAccessibility")
@@ -627,8 +809,8 @@ class NowPlayingView(
 
         vinylDiscView.apply {
             visibility = View.GONE
-            onNext = { audioEngine?.next() }
-            onPrevious = { audioEngine?.previous() }
+            onNext = { triggerTrackNavigation(1) }
+            onPrevious = { triggerTrackNavigation(-1) }
             onSeekDeltaMs = { delta ->
                 val eng = audioEngine
                 if (eng != null) {
@@ -715,6 +897,7 @@ class NowPlayingView(
             addOnScrollListener(object : RecyclerView.OnScrollListener() {
                 override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
                     if (newState == RecyclerView.SCROLL_STATE_DRAGGING && parsedLyrics.isSynced && parsedLyrics.lines.isNotEmpty()) {
+                        lyricsAdapter.cancelScrollAnimation(recyclerView)
                         pauseLyricsAutoScroll()
                     } else if (newState == RecyclerView.SCROLL_STATE_IDLE && manualScrollPaused) {
                         scheduleAutoResume()
@@ -841,7 +1024,15 @@ class NowPlayingView(
             visibility = View.GONE
         }
 
-        val offsetRow = LinearLayout(context).apply {
+        lyricSourceBadgeTv.apply {
+            setTextColor(0xB8FFFFFF.toInt())
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setPadding(dp(8), dp(2), dp(8), dp(4))
+            visibility = View.GONE
+        }
+
+        offsetRow.apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
@@ -868,7 +1059,7 @@ class NowPlayingView(
         offsetRow.addView(offsetPlusBtn)
         offsetRow.addView(offsetSaveBtn)
 
-        val anchorRow = LinearLayout(context).apply {
+        anchorRow.apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
@@ -888,6 +1079,7 @@ class NowPlayingView(
         anchorRow.addView(anchorOptimalBtn, LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply { marginEnd = dp(6) })
         anchorRow.addView(anchorCenterBtn, LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT))
 
+        lyricTunerPanel.addView(lyricSourceBadgeTv)
         lyricTunerPanel.addView(offsetRow)
         lyricTunerPanel.addView(
             anchorRow,
@@ -1031,8 +1223,8 @@ class NowPlayingView(
     }
 
     private fun updateLyricTunerVisibility(animate: Boolean) {
-        val hasSynced = parsedLyrics.isSynced && parsedLyrics.lines.isNotEmpty()
-        if (!hasSynced || zenModeActive) {
+        val hasLines = parsedLyrics.lines.isNotEmpty()
+        if (!hasLines || zenModeActive) {
             if (animate) {
                 SpringAnimatorHelper.springDismiss(lyricTunerPanel, toTranslationY = dp(10).toFloat(), toScale = 0.94f)
                 SpringAnimatorHelper.springDismiss(lyricTunerToggleBtn, toScale = 0.90f)
@@ -1044,6 +1236,10 @@ class NowPlayingView(
             }
             return
         }
+
+        val syncVisibility = if (parsedLyrics.isSynced) View.VISIBLE else View.GONE
+        offsetRow.visibility = syncVisibility
+        anchorRow.visibility = syncVisibility
 
         if (lyricTunerState.isExpanded) {
             if (animate) {
@@ -1170,12 +1366,12 @@ class NowPlayingView(
             }
         )
 
-        // Dock 2: SeekCapsuleView
-        seekCapsuleView.setOnSeekListener { posMs ->
+        // Dock 2: WaveformPillSeekBarView
+        seekWaveformView.setOnSeekListener { posMs ->
             audioEngine?.seekTo(posMs)
         }
         bottomControlDock.addView(
-            seekCapsuleView,
+            seekWaveformView,
             LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply {
                 bottomMargin = dp(10)
             }
@@ -1211,7 +1407,7 @@ class NowPlayingView(
             minimumHeight = dp(48)
             setPadding(dp(10), dp(10), dp(10), dp(10))
             SpringAnimatorHelper.attachPressFeedback(this)
-            setOnClickListener { audioEngine?.previous() }
+            setOnClickListener { triggerTrackNavigation(-1) }
         }
         playPauseGlass.setTintProfile(baseFraction = 0.25f, accentFraction = 0.85f, preferAccentGlow = true)
         playPauseButton.apply {
@@ -1220,9 +1416,81 @@ class NowPlayingView(
             imageTintList = ColorStateList.valueOf(0xFFFFFFFF.toInt())
             contentDescription = context.getString(R.string.cd_play_pause)
             scaleType = ImageView.ScaleType.CENTER_INSIDE
-            setPadding(dp(16), dp(16), dp(16), dp(16))
-            SpringAnimatorHelper.attachPressFeedback(this)
+            setPadding(dp(18), dp(18), dp(18), dp(18))
             setOnClickListener { audioEngine?.togglePlayPause() }
+            setOnTouchListener { v, event ->
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        playDragDownRawX = event.rawX
+                        playDragDownRawY = event.rawY
+                        isPlayDragging = false
+                        playDragThresholdCrossed = false
+                        SpringAnimatorHelper.cancelSpring(v, CHANNEL_PLAY_DRAG)
+                        SpringAnimatorHelper.springScale(v, SpringAnimatorHelper.SPRING_PRESS_SCALE)
+                        v.parent?.requestDisallowInterceptTouchEvent(true)
+                        true
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        val dx = event.rawX - playDragDownRawX
+                        val dy = event.rawY - playDragDownRawY
+                        if (!isPlayDragging && (abs(dx) > touchSlop || abs(dy) > touchSlop)) {
+                            if (abs(dx) >= abs(dy)) {
+                                isPlayDragging = true
+                            } else {
+                                v.parent?.requestDisallowInterceptTouchEvent(false)
+                            }
+                        }
+                        if (isPlayDragging) {
+                            v.translationX = PlayDragMath.computeRubberBandOffset(
+                                dx,
+                                playDragThresholdPx,
+                                playDragMaxOffsetPx
+                            )
+                            val dir = PlayDragMath.resolveDragDirection(dx, playDragThresholdPx)
+                            if (dir != 0 && !playDragThresholdCrossed) {
+                                playDragThresholdCrossed = true
+                                v.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                            } else if (dir == 0) {
+                                playDragThresholdCrossed = false
+                            }
+                        }
+                        true
+                    }
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        v.parent?.requestDisallowInterceptTouchEvent(false)
+                        SpringAnimatorHelper.springScale(v, 1f)
+                        val dx = event.rawX - playDragDownRawX
+                        val dir = if (event.actionMasked == MotionEvent.ACTION_UP && isPlayDragging) {
+                            PlayDragMath.resolveDragDirection(dx, playDragThresholdPx)
+                        } else {
+                            0
+                        }
+                        val wasDrag = isPlayDragging
+                        isPlayDragging = false
+                        playDragThresholdCrossed = false
+
+                        if (wasDrag) {
+                            SpringAnimatorHelper.animateSpring(
+                                key = v,
+                                start = v.translationX,
+                                target = 0f,
+                                stiffness = SpringAnimatorHelper.SPRING_STIFFNESS,
+                                dampingRatio = SpringAnimatorHelper.SPRING_DAMPING_RATIO,
+                                valueThreshold = 0.25f,
+                                channel = CHANNEL_PLAY_DRAG,
+                                onUpdate = { tx -> v.translationX = tx }
+                            )
+                            if (dir != 0) {
+                                triggerTrackNavigation(dir)
+                            }
+                        } else if (event.actionMasked == MotionEvent.ACTION_UP) {
+                            v.performClick()
+                        }
+                        true
+                    }
+                    else -> false
+                }
+            }
         }
         nextButton.apply {
             setImageResource(R.drawable.ic_next)
@@ -1234,7 +1502,7 @@ class NowPlayingView(
             minimumHeight = dp(48)
             setPadding(dp(10), dp(10), dp(10), dp(10))
             SpringAnimatorHelper.attachPressFeedback(this)
-            setOnClickListener { audioEngine?.next() }
+            setOnClickListener { triggerTrackNavigation(1) }
         }
         repeatButton.apply {
             setImageResource(R.drawable.ic_repeat)
@@ -1253,9 +1521,9 @@ class NowPlayingView(
 
         controlsRow.addView(shuffleButton, LinearLayout.LayoutParams(0, dp(52), 1f))
         controlsRow.addView(prevButton, LinearLayout.LayoutParams(0, dp(52), 1f))
-        controlsRow.addView(playPauseButton, LinearLayout.LayoutParams(dp(76), dp(58)).apply {
-            marginStart = dp(8)
-            marginEnd = dp(8)
+        controlsRow.addView(playPauseButton, LinearLayout.LayoutParams(dp(64), dp(64)).apply {
+            marginStart = dp(10)
+            marginEnd = dp(10)
         })
         controlsRow.addView(nextButton, LinearLayout.LayoutParams(0, dp(52), 1f))
         controlsRow.addView(repeatButton, LinearLayout.LayoutParams(0, dp(52), 1f))
@@ -1627,7 +1895,8 @@ class NowPlayingView(
         amoledPillGlass.setPalette(newPalette)
         modalCardGlass.setPalette(newPalette)
         modalCardGlass.setTintProfile(baseFraction = 0.85f, accentFraction = 0.15f)
-        seekCapsuleView.setPalette(newPalette)
+        seekWaveformView.setPalette(newPalette)
+        lyricsAdapter.setAccentColor(newPalette.accentGlow)
         updateHighlightAnchorButtons()
         updateFavoriteButton(audioEngine?.getCurrentTrack())
         updateShuffleAndRepeatState()
@@ -1935,5 +2204,8 @@ class NowPlayingView(
         const val AUTO_RESUME_DELAY_MS = 4_000L
         const val PREFS_NAME = "laguku_prefs"
         const val KEY_FAVORITES = "favorite_paths"
+        const val CHANNEL_PLAY_DRAG = 21
+        const val CHANNEL_AMOLED = 22
+        const val CHANNEL_ARTIST_SLIDE = 23
     }
 }

@@ -119,6 +119,18 @@ class LagukuPillWidgetProvider : AppWidgetProvider() {
         }
 
         /**
+         * Requests the launcher to pin the Laguku Pill widget onto the home screen.
+         * Returns false when the active launcher does not support automatic pinning.
+         */
+        fun requestPinWidget(context: Context): Boolean {
+            val appContext = context.applicationContext
+            val manager = AppWidgetManager.getInstance(appContext)
+            if (!manager.isRequestPinAppWidgetSupported) return false
+            val provider = ComponentName(appContext, LagukuPillWidgetProvider::class.java)
+            return manager.requestPinAppWidget(provider, null, null)
+        }
+
+        /**
          * Event-driven entry point invoked by [PlaybackService] on track, state, quality,
          * queue-completion, or artwork-decode transitions. Never blocks the calling thread.
          */

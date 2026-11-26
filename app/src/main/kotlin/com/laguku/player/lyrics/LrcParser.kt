@@ -1,6 +1,8 @@
 package com.laguku.player.lyrics
 
+import com.laguku.player.metadata.BinaryTagReader
 import com.laguku.player.model.LyricLine
+import com.laguku.player.model.LyricSource
 import com.laguku.player.model.ParsedLyrics
 import com.laguku.player.model.WordToken
 import java.io.File
@@ -93,27 +95,75 @@ object LrcParser {
 
         return if (syncedLines.isNotEmpty()) {
             syncedLines.sortBy { it.timestampMs }
-            val merged = mergeBilingualLines(syncedLines)
+            val merged = mergeMultiLayerLines(syncedLines)
             ParsedLyrics(lines = merged, isSynced = true, offsetMs = offsetMs)
         } else {
             ParsedLyrics(lines = fallbackStaticLines, isSynced = false, offsetMs = offsetMs)
         }
     }
 
-    private fun mergeBilingualLines(sorted: List<LyricLine>): List<LyricLine> {
+    /**
+     * Loads lyrics in strict priority order:
+     * 1) Synced lyrics embedded in audio binary tags ([LyricSource.EMBEDDED_TAG])
+     * 2) Local sidecar `.lrc` next to the audio file ([LyricSource.SIDECAR_LRC], mandatory fallback for WAV)
+     * 3) App internal fallback `.lrc` ([LyricSource.INTERNAL_FALLBACK])
+     * 4) Embedded unsynced plain-text lyrics ([LyricSource.EMBEDDED_TAG])
+     */
+    fun loadLyrics(
+        audioFile: File,
+        internalFallbackDir: File,
+        embeddedLyrics: String? = BinaryTagReader.readEmbedded(audioFile).lyrics
+    ): ParsedLyrics {
+        val embeddedParsed = embeddedLyrics?.takeIf { it.isNotBlank() }?.let { parse(it) }
+        if (embeddedParsed != null && embeddedParsed.isSynced && embeddedParsed.lines.isNotEmpty()) {
+            return embeddedParsed.copy(source = LyricSource.EMBEDDED_TAG)
+        }
+
+        val sidecarRaw = BinaryTagReader.readSidecarLrc(audioFile)
+        if (!sidecarRaw.isNullOrBlank()) {
+            val sidecarParsed = parse(sidecarRaw)
+            if (sidecarParsed.lines.isNotEmpty()) {
+                return sidecarParsed.copy(source = LyricSource.SIDECAR_LRC)
+            }
+        }
+
+        val internalRaw = loadFallbackLrc(audioFile, internalFallbackDir)
+        if (!internalRaw.isNullOrBlank()) {
+            val internalParsed = parse(internalRaw)
+            if (internalParsed.lines.isNotEmpty()) {
+                return internalParsed.copy(source = LyricSource.INTERNAL_FALLBACK)
+            }
+        }
+
+        if (embeddedParsed != null && embeddedParsed.lines.isNotEmpty()) {
+            return embeddedParsed.copy(source = LyricSource.EMBEDDED_TAG)
+        }
+
+        return ParsedLyrics(lines = emptyList(), isSynced = false, offsetMs = 0L, source = LyricSource.NONE)
+    }
+
+    private fun mergeMultiLayerLines(sorted: List<LyricLine>): List<LyricLine> {
         if (sorted.size < 2) return sorted
         val out = ArrayList<LyricLine>(sorted.size)
+        var groupCount = 0
         for (line in sorted) {
             val prev = out.lastOrNull()
             if (prev != null &&
                 prev.timestampMs == line.timestampMs &&
-                prev.translation == null &&
                 prev.text.isNotBlank() &&
-                line.text.isNotBlank()
+                line.text.isNotBlank() &&
+                groupCount < 3
             ) {
-                out[out.lastIndex] = prev.copy(translation = line.text)
+                if (groupCount == 1) {
+                    out[out.lastIndex] = prev.copy(translation = line.text)
+                    groupCount = 2
+                } else {
+                    out[out.lastIndex] = prev.copy(romanizedText = prev.translation, translation = line.text)
+                    groupCount = 3
+                }
             } else {
                 out.add(line)
+                groupCount = 1
             }
         }
         return out

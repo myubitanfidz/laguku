@@ -41,6 +41,7 @@ import com.laguku.player.model.AudioQualityInfo
 import com.laguku.player.model.CoverPalette
 import com.laguku.player.model.LosslessAuditStatus
 import com.laguku.player.model.LyricLine
+import com.laguku.player.model.LyricSource
 import com.laguku.player.model.Playlist
 import com.laguku.player.model.Track
 import com.laguku.player.service.ActiveOutputRoute
@@ -62,8 +63,9 @@ import com.laguku.player.ui.motion.SpringAnimatorHelper
 import com.laguku.player.ui.player.AudioLabSheetView
 import com.laguku.player.ui.player.LyricCardRenderer
 import com.laguku.player.ui.player.NowPlayingView
-import com.laguku.player.ui.player.SeekCapsuleView
 import com.laguku.player.ui.player.TapToSyncSheetView
+import com.laguku.player.ui.player.WaveformPillSeekBarView
+import com.laguku.player.widget.LagukuPillWidgetProvider
 import java.io.File
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -80,6 +82,7 @@ class MainActivity : Activity(), AudioEngine.Listener, LibraryView.Callbacks, Pl
     private lateinit var rootFrame: FrameLayout
     private lateinit var backdropPrimary: ImageView
     private lateinit var backdropSecondary: ImageView
+    private lateinit var amoledOverlayView: View
     private lateinit var libraryView: LibraryView
     private lateinit var nowPlayingView: NowPlayingView
     private lateinit var audioLabSheet: AudioLabSheetView
@@ -108,6 +111,7 @@ class MainActivity : Activity(), AudioEngine.Listener, LibraryView.Callbacks, Pl
     private var lastLoadedTrackPath: String? = null
     private var lastDisplayCover: Bitmap? = null
     private var amoledNightMode: Boolean = false
+    private var amoledOverlayProgress: Float = 0f
     private var pendingShuffleAllFromShortcut: Boolean = false
 
     private var backCallback: OnBackInvokedCallback? = null
@@ -127,7 +131,7 @@ class MainActivity : Activity(), AudioEngine.Listener, LibraryView.Callbacks, Pl
             nowPlayingView.attachEngine(engine)
 
             amoledNightMode = stateStore?.isAmoledNightMode() == true
-            applyAmoledNightMode(amoledNightMode)
+            applyAmoledNightMode(amoledNightMode, animate = false)
             val highlightFrac = stateStore?.getLyricHighlightFraction() ?: PlaybackStateStore.LYRIC_ANCHOR_OPTIMAL
             nowPlayingView.setLyricHighlightFraction(highlightFrac)
 
@@ -475,6 +479,11 @@ class MainActivity : Activity(), AudioEngine.Listener, LibraryView.Callbacks, Pl
             scaleType = ImageView.ScaleType.CENTER_CROP
             alpha = 0f
         }
+        amoledOverlayView = View(this).apply {
+            setBackgroundColor(0xFF000000.toInt())
+            alpha = 0f
+            visibility = View.GONE
+        }
 
         libraryView = LibraryView(this, this)
         nowPlayingView = NowPlayingView(this) {
@@ -646,11 +655,18 @@ class MainActivity : Activity(), AudioEngine.Listener, LibraryView.Callbacks, Pl
                     stateStore?.removeBlacklistedFolder(folderPath)
                     refreshFilteredLibraryUi()
                 }
+
+                override fun onPinWidgetToHomeScreen() {
+                    val requested = LagukuPillWidgetProvider.requestPinWidget(this@MainActivity)
+                    val msgRes = if (requested) R.string.pin_widget_requested else R.string.pin_widget_unsupported
+                    Toast.makeText(this@MainActivity, getString(msgRes), Toast.LENGTH_SHORT).show()
+                }
             }
         }
 
         rootFrame.addView(backdropPrimary, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         rootFrame.addView(backdropSecondary, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        rootFrame.addView(amoledOverlayView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         rootFrame.addView(libraryView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         rootFrame.addView(nowPlayingView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         rootFrame.addView(audioLabSheet, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
@@ -769,17 +785,57 @@ class MainActivity : Activity(), AudioEngine.Listener, LibraryView.Callbacks, Pl
         val next = forceOn ?: !amoledNightMode
         amoledNightMode = next
         stateStore?.setAmoledNightMode(next)
-        applyAmoledNightMode(next)
+        applyAmoledNightMode(next, animate = true)
     }
 
-    private fun applyAmoledNightMode(enabled: Boolean) {
-        val bgColor = if (enabled) 0xFF000000.toInt() else currentPalette.deepBackdrop
-        rootFrame.setBackgroundColor(bgColor)
-        val backdropVis = if (enabled) View.GONE else View.VISIBLE
-        backdropPrimary.visibility = backdropVis
-        backdropSecondary.visibility = backdropVis
-        nowPlayingView.setAmoledMode(enabled)
+    private fun applyAmoledNightMode(enabled: Boolean, animate: Boolean = true) {
+        val target = if (enabled) 1f else 0f
+        nowPlayingView.setAmoledMode(enabled, animate = animate)
         libraryView.setAmoledMode(enabled)
+
+        backdropPrimary.visibility = View.VISIBLE
+        backdropSecondary.visibility = View.VISIBLE
+        amoledOverlayView.visibility = View.VISIBLE
+
+        if (!animate || SpringAnimatorHelper.isReducedMotionEnabled(this)) {
+            SpringAnimatorHelper.cancelSpring(amoledOverlayView, CHANNEL_AMOLED_OVERLAY)
+            amoledOverlayProgress = target
+            amoledOverlayView.alpha = SpringAnimatorHelper.AmoledTransitionMath.computeOverlayAlpha(target)
+            if (enabled) {
+                rootFrame.setBackgroundColor(0xFF000000.toInt())
+                backdropPrimary.visibility = View.GONE
+                backdropSecondary.visibility = View.GONE
+            } else {
+                rootFrame.setBackgroundColor(currentPalette.deepBackdrop)
+                amoledOverlayView.visibility = View.GONE
+            }
+            return
+        }
+
+        if (!enabled) {
+            rootFrame.setBackgroundColor(currentPalette.deepBackdrop)
+        }
+        SpringAnimatorHelper.animateSpring(
+            key = amoledOverlayView,
+            start = amoledOverlayProgress,
+            target = target,
+            stiffness = SpringAnimatorHelper.AmoledTransitionMath.AMOLED_STIFFNESS,
+            dampingRatio = SpringAnimatorHelper.AmoledTransitionMath.AMOLED_DAMPING_RATIO,
+            channel = CHANNEL_AMOLED_OVERLAY,
+            onUpdate = { p ->
+                amoledOverlayProgress = p.coerceIn(0f, 1f)
+                amoledOverlayView.alpha = SpringAnimatorHelper.AmoledTransitionMath.computeOverlayAlpha(amoledOverlayProgress)
+            },
+            onEnd = {
+                if (amoledNightMode) {
+                    rootFrame.setBackgroundColor(0xFF000000.toInt())
+                    backdropPrimary.visibility = View.GONE
+                    backdropSecondary.visibility = View.GONE
+                } else {
+                    amoledOverlayView.visibility = View.GONE
+                }
+            }
+        )
     }
 
     private fun showNowPlaying() {
@@ -874,12 +930,13 @@ class MainActivity : Activity(), AudioEngine.Listener, LibraryView.Callbacks, Pl
 
         backgroundExecutor.execute {
             val file = File(trackPath)
-            val tags = runCatching { BinaryTagReader.read(file) }.getOrNull()
-            val rawLyrics = tags?.lyrics?.takeIf { it.isNotBlank() }
-                ?: LrcParser.loadFallbackLrc(file, getInternalLyricsDir()).orEmpty()
-            val parsedLyrics = LrcParser.parse(rawLyrics)
-            val waveform = SeekCapsuleView.computeWaveformBars(file)
-            val artBytes = tags?.artworkBytes
+            val embedded = runCatching { BinaryTagReader.readEmbedded(file) }.getOrNull()
+            val parsedLyrics = LrcParser.loadLyrics(file, getInternalLyricsDir(), embedded?.lyrics)
+            val waveform = WaveformPillSeekBarView.extractWaveformBars(
+                file,
+                track.contentUri.ifBlank { trackPath }
+            )
+            val artBytes = embedded?.artworkBytes ?: file.parentFile?.let { BinaryTagReader.readArtworkSidecar(it) }
 
             val microBitmap = StackBlur.decodeMicroCover(artBytes, targetSize = 64)
             val blurredBackdrop = microBitmap?.let { StackBlur.createBlurredBackdrop(it, radius = 12) }
@@ -979,7 +1036,7 @@ class MainActivity : Activity(), AudioEngine.Listener, LibraryView.Callbacks, Pl
     }
 
     private fun saveLyricsAndApply(track: Track, lrcContent: String) {
-        nowPlayingView.setLyrics(LrcParser.parse(lrcContent))
+        nowPlayingView.setLyrics(LrcParser.parse(lrcContent).copy(source = LyricSource.SIDECAR_LRC))
         saveLyricsOnly(track, lrcContent)
     }
 
@@ -995,6 +1052,14 @@ class MainActivity : Activity(), AudioEngine.Listener, LibraryView.Callbacks, Pl
             )
             runOnUiThread {
                 if (!isDestroyed && saved != null) {
+                    val actualSource = if (saved.parentFile?.canonicalPath == getInternalLyricsDir().canonicalPath) {
+                        LyricSource.INTERNAL_FALLBACK
+                    } else {
+                        LyricSource.SIDECAR_LRC
+                    }
+                    if (audioEngine?.getCurrentTrack()?.path == track.path) {
+                        nowPlayingView.setLyrics(LrcParser.parse(lrcContent).copy(source = actualSource))
+                    }
                     Toast.makeText(this@MainActivity, getString(R.string.lyrics_saved_lrc), Toast.LENGTH_SHORT).show()
                 }
             }
@@ -1156,7 +1221,7 @@ class MainActivity : Activity(), AudioEngine.Listener, LibraryView.Callbacks, Pl
             runOnUiThread {
                 if (res.success) {
                     amoledNightMode = store.isAmoledNightMode()
-                    applyAmoledNightMode(amoledNightMode)
+                    applyAmoledNightMode(amoledNightMode, animate = false)
                     AlarmScheduler.schedule(this@MainActivity, store.getMorningAlarm())
                     loadLibraryAsync()
                     Toast.makeText(
@@ -1313,5 +1378,6 @@ class MainActivity : Activity(), AudioEngine.Listener, LibraryView.Callbacks, Pl
         private const val REQ_EXPORT_M3U8 = 202
         private const val REQ_EXPORT_BACKUP = 203
         private const val REQ_IMPORT_BACKUP = 204
+        private const val CHANNEL_AMOLED_OVERLAY = 40
     }
 }

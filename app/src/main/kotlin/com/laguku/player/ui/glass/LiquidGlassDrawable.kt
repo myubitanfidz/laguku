@@ -11,6 +11,8 @@ import android.graphics.RectF
 import android.graphics.Shader
 import android.graphics.drawable.Drawable
 import com.laguku.player.model.CoverPalette
+import com.laguku.player.ui.motion.SpringAnimatorHelper
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
@@ -42,6 +44,7 @@ class LiquidGlassDrawable(
     private var accentAlphaFraction: Float = 0.14f
     private var useAccentGlowAsTint: Boolean = false
     private var drawableAlpha: Int = 255
+    private var amoledProgress: Float = 0f
 
     private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
@@ -84,6 +87,15 @@ class LiquidGlassDrawable(
         accentAlphaFraction = accentFraction.coerceIn(0f, 1f)
         useAccentGlowAsTint = preferAccentGlow
         applyPaletteColors()
+        invalidateSelf()
+    }
+
+    fun setAmoledProgress(progress: Float) {
+        val clamped = progress.coerceIn(0f, 1f)
+        if (abs(amoledProgress - clamped) < 0.001f) return
+        amoledProgress = clamped
+        applyPaletteColors()
+        rebuildShaders(bounds)
         invalidateSelf()
     }
 
@@ -142,9 +154,10 @@ class LiquidGlassDrawable(
             return
         }
 
-        val bR = (palette.deepBackdrop ushr 16) and 0xFF
-        val bG = (palette.deepBackdrop ushr 8) and 0xFF
-        val bB = palette.deepBackdrop and 0xFF
+        val baseDarken = 1f - 0.55f * amoledProgress
+        val bR = (((palette.deepBackdrop ushr 16) and 0xFF) * baseDarken).roundToInt()
+        val bG = (((palette.deepBackdrop ushr 8) and 0xFF) * baseDarken).roundToInt()
+        val bB = ((palette.deepBackdrop and 0xFF) * baseDarken).roundToInt()
 
         val tintSource = if (useAccentGlowAsTint) palette.accentGlow else palette.glassTint
         val tR = (tintSource ushr 16) and 0xFF
@@ -178,13 +191,19 @@ class LiquidGlassDrawable(
             Shader.TileMode.CLAMP
         )
 
+        val contrastFactor = SpringAnimatorHelper.AmoledTransitionMath.computeRimContrastFactor(amoledProgress)
+        val topLeftAlpha = (0x57 * contrastFactor).roundToInt().coerceIn(0, 255)
+        val bottomRightAlpha = (0x0D * (1f + amoledProgress)).roundToInt().coerceIn(0, 255)
+        val rimTopLeft = (topLeftAlpha shl 24) or 0xFFFFFF
+        val rimBottomRight = (bottomRightAlpha shl 24) or 0xFFFFFF
+
         rimPaint.shader = LinearGradient(
             left,
             top,
             right,
             bottom,
-            RIM_TOP_LEFT_COLOR,
-            RIM_BOTTOM_RIGHT_COLOR,
+            rimTopLeft,
+            rimBottomRight,
             Shader.TileMode.CLAMP
         )
     }
@@ -192,7 +211,5 @@ class LiquidGlassDrawable(
     private companion object {
         const val SHEEN_TOP_COLOR = 0x22FFFFFF
         const val SHEEN_BOTTOM_COLOR = 0x00FFFFFF
-        const val RIM_TOP_LEFT_COLOR = 0x57FFFFFF // ~34% white
-        const val RIM_BOTTOM_RIGHT_COLOR = 0x0DFFFFFF // ~5% white
     }
 }

@@ -23,6 +23,7 @@ import android.media.session.MediaSession
 import android.media.session.PlaybackState
 import android.os.Binder
 import android.os.Build
+import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
@@ -231,6 +232,21 @@ class PlaybackService : Service(), AudioEngine.Listener {
                     audioEngine.seekTo(pos)
                 }
 
+                override fun onRewind() {
+                    seekByMs(-10_000L)
+                }
+
+                override fun onFastForward() {
+                    seekByMs(10_000L)
+                }
+
+                override fun onCustomAction(action: String, extras: Bundle?) {
+                    when (action) {
+                        CUSTOM_ACTION_REWIND_10 -> seekByMs(-10_000L)
+                        CUSTOM_ACTION_FORWARD_10 -> seekByMs(10_000L)
+                    }
+                }
+
                 override fun onStop() {
                     stopPlaybackAndForeground()
                 }
@@ -251,6 +267,8 @@ class PlaybackService : Service(), AudioEngine.Listener {
         if (action == ACTION_PLAY_PAUSE ||
             action == ACTION_PREVIOUS ||
             action == ACTION_NEXT ||
+            action == ACTION_REWIND_10 ||
+            action == ACTION_FORWARD_10 ||
             action == ACTION_MORNING_ALARM_TRIGGER
         ) {
             ensureForegroundForStartCommand()
@@ -266,6 +284,8 @@ class PlaybackService : Service(), AudioEngine.Listener {
             }
             ACTION_PREVIOUS -> audioEngine.previous()
             ACTION_NEXT -> audioEngine.next()
+            ACTION_REWIND_10 -> seekByMs(-10_000L)
+            ACTION_FORWARD_10 -> seekByMs(10_000L)
             ACTION_MORNING_ALARM_TRIGGER -> {
                 val fadeSec = intent.getIntExtra(AlarmScheduler.EXTRA_FADE_IN_SEC, 30)
                 handleMorningAlarmTrigger(fadeSec)
@@ -276,7 +296,12 @@ class PlaybackService : Service(), AudioEngine.Listener {
                 return START_NOT_STICKY
             }
         }
-        if (action == ACTION_PLAY_PAUSE || action == ACTION_PREVIOUS || action == ACTION_NEXT) {
+        if (action == ACTION_PLAY_PAUSE ||
+            action == ACTION_PREVIOUS ||
+            action == ACTION_NEXT ||
+            action == ACTION_REWIND_10 ||
+            action == ACTION_FORWARD_10
+        ) {
             val currentTrack = audioEngine.getCurrentTrack()
             if (currentTrack == null) {
                 stopForegroundCompat(removeNotification = true)
@@ -538,6 +563,14 @@ class PlaybackService : Service(), AudioEngine.Listener {
         }
     }
 
+    private fun seekByMs(deltaMs: Long) {
+        val dur = audioEngine.getDurationMs().coerceAtLeast(0L)
+        val cur = audioEngine.getCurrentPositionMs()
+        val target = if (dur > 0L) (cur + deltaMs).coerceIn(0L, dur) else (cur + deltaMs).coerceAtLeast(0L)
+        audioEngine.seekTo(target)
+        updatePlaybackState(audioEngine.isPlaying(), target)
+    }
+
     private fun executeMediaAction(action: MediaAction) {
         when (action) {
             MediaAction.PLAY_PAUSE -> {
@@ -623,6 +656,20 @@ class PlaybackService : Service(), AudioEngine.Listener {
         val playbackState = PlaybackState.Builder()
             .setActions(SUPPORTED_SESSION_ACTIONS)
             .setState(state, positionMs, speed)
+            .addCustomAction(
+                PlaybackState.CustomAction.Builder(
+                    CUSTOM_ACTION_REWIND_10,
+                    "Mundur 10d",
+                    R.drawable.ic_notif_rewind_10
+                ).build()
+            )
+            .addCustomAction(
+                PlaybackState.CustomAction.Builder(
+                    CUSTOM_ACTION_FORWARD_10,
+                    "Maju 10d",
+                    R.drawable.ic_notif_forward_10
+                ).build()
+            )
             .build()
         mediaSession.setPlaybackState(playbackState)
     }
@@ -649,18 +696,24 @@ class PlaybackService : Service(), AudioEngine.Listener {
     }
 
     private fun buildNotification(track: Track, isPlaying: Boolean): Notification {
+        val rewind10Action = Notification.Action.Builder(
+            Icon.createWithResource(this, R.drawable.ic_notif_rewind_10),
+            "Mundur 10 detik",
+            createServiceActionIntent(ACTION_REWIND_10, 4)
+        ).build()
+
         val prevAction = Notification.Action.Builder(
-            Icon.createWithResource(this, android.R.drawable.ic_media_previous),
-            "Previous",
+            Icon.createWithResource(this, R.drawable.ic_notif_prev),
+            "Sebelumnya",
             createServiceActionIntent(ACTION_PREVIOUS, 1)
         ).build()
 
         val playPauseIcon = if (isPlaying) {
-            android.R.drawable.ic_media_pause
+            R.drawable.ic_notif_pause
         } else {
-            android.R.drawable.ic_media_play
+            R.drawable.ic_notif_play
         }
-        val playPauseLabel = if (isPlaying) "Pause" else "Play"
+        val playPauseLabel = if (isPlaying) "Jeda" else "Putar"
         val playPauseAction = Notification.Action.Builder(
             Icon.createWithResource(this, playPauseIcon),
             playPauseLabel,
@@ -668,15 +721,21 @@ class PlaybackService : Service(), AudioEngine.Listener {
         ).build()
 
         val nextAction = Notification.Action.Builder(
-            Icon.createWithResource(this, android.R.drawable.ic_media_next),
-            "Next",
+            Icon.createWithResource(this, R.drawable.ic_notif_next),
+            "Berikutnya",
             createServiceActionIntent(ACTION_NEXT, 3)
+        ).build()
+
+        val forward10Action = Notification.Action.Builder(
+            Icon.createWithResource(this, R.drawable.ic_notif_forward_10),
+            "Maju 10 detik",
+            createServiceActionIntent(ACTION_FORWARD_10, 5)
         ).build()
 
         val contentIntent = createMainActivityPendingIntent()
 
         val builder = Notification.Builder(this, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_media_play)
+            .setSmallIcon(R.drawable.ic_music_note)
             .setContentTitle(track.title)
             .setContentText(track.artist)
             .setSubText(track.album)
@@ -684,13 +743,15 @@ class PlaybackService : Service(), AudioEngine.Listener {
             .setOngoing(isPlaying)
             .setOnlyAlertOnce(true)
             .setVisibility(Notification.VISIBILITY_PUBLIC)
+            .addAction(rewind10Action)
             .addAction(prevAction)
             .addAction(playPauseAction)
             .addAction(nextAction)
+            .addAction(forward10Action)
             .setStyle(
                 Notification.MediaStyle()
                     .setMediaSession(mediaSession.sessionToken)
-                    .setShowActionsInCompactView(0, 1, 2)
+                    .setShowActionsInCompactView(1, 2, 3)
             )
 
         val largeIcon = cachedArtworkBitmap?.takeIf { !it.isRecycled } ?: getOrCreateDefaultCover()
@@ -791,8 +852,13 @@ class PlaybackService : Service(), AudioEngine.Listener {
         const val ACTION_PLAY_PAUSE = "com.laguku.player.action.PLAY_PAUSE"
         const val ACTION_PREVIOUS = "com.laguku.player.action.PREVIOUS"
         const val ACTION_NEXT = "com.laguku.player.action.NEXT"
+        const val ACTION_REWIND_10 = "com.laguku.player.action.REWIND_10"
+        const val ACTION_FORWARD_10 = "com.laguku.player.action.FORWARD_10"
         const val ACTION_STOP = "com.laguku.player.action.STOP"
         const val ACTION_MORNING_ALARM_TRIGGER = "com.laguku.player.action.MORNING_ALARM_TRIGGER"
+
+        const val CUSTOM_ACTION_REWIND_10 = "com.laguku.player.session.REWIND_10"
+        const val CUSTOM_ACTION_FORWARD_10 = "com.laguku.player.session.FORWARD_10"
 
         @Volatile
         var lastKnownTrackTitle: String? = null
@@ -810,6 +876,8 @@ class PlaybackService : Service(), AudioEngine.Listener {
                 PlaybackState.ACTION_SKIP_TO_NEXT or
                 PlaybackState.ACTION_SKIP_TO_PREVIOUS or
                 PlaybackState.ACTION_SEEK_TO or
+                PlaybackState.ACTION_REWIND or
+                PlaybackState.ACTION_FAST_FORWARD or
                 PlaybackState.ACTION_STOP
 
         private fun decodeScaledBitmap(bytes: ByteArray, maxDim: Int): Bitmap? {

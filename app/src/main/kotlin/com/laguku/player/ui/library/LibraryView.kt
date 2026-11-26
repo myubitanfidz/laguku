@@ -4,13 +4,17 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.res.ColorStateList
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Outline
 import android.graphics.Paint
 import android.graphics.Typeface
+import android.os.Handler
+import android.os.Looper
 import android.text.Editable
 import android.text.TextUtils
 import android.text.TextWatcher
+import android.util.LruCache
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
@@ -28,6 +32,7 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.laguku.player.R
 import com.laguku.player.data.LibraryScanner
+import com.laguku.player.metadata.BinaryTagReader
 import com.laguku.player.model.AlbumGroup
 import com.laguku.player.model.ArtistGroup
 import com.laguku.player.model.CoverPalette
@@ -38,6 +43,8 @@ import com.laguku.player.ui.glass.CoverPaletteExtractor
 import com.laguku.player.ui.glass.InteractiveGlassScrubView
 import com.laguku.player.ui.glass.LiquidGlassDrawable
 import com.laguku.player.ui.motion.SpringAnimatorHelper
+import java.io.File
+import java.util.concurrent.Executors
 
 /**
  * Main library browser following the Bottom-Half Thumb-Zone Layout:
@@ -1098,15 +1105,16 @@ class LibraryView(
             when (val entry = entries[position]) {
                 is ListEntry.TrackEntry -> {
                     val t = entry.track
-                    holder.iconBadge.scaleType = ImageView.ScaleType.CENTER_INSIDE
-                    holder.iconBadge.setPadding(badgePad, badgePad, badgePad, badgePad)
-                    holder.iconBadge.setImageResource(R.drawable.ic_music_note)
-                    holder.iconBadge.imageTintList = TINT_WHITE_80
+                    holder.iconBadge.scaleType = ImageView.ScaleType.CENTER_CROP
+                    holder.iconBadge.setPadding(0, 0, 0, 0)
+                    holder.iconBadge.imageTintList = null
+                    TrackThumbnailLoader.bind(holder.iconBadge, t)
                     holder.primary.text = t.title
                     holder.secondary.text = t.artist
                     holder.bindDuration(t.durationMs)
                 }
                 is ListEntry.FolderEntry -> {
+                    holder.iconBadge.tag = null
                     holder.iconBadge.scaleType = ImageView.ScaleType.CENTER_INSIDE
                     holder.iconBadge.setPadding(badgePad, badgePad, badgePad, badgePad)
                     holder.iconBadge.setImageResource(R.drawable.ic_folder)
@@ -1116,6 +1124,7 @@ class LibraryView(
                     holder.bindCount(entry.node.tracks.size)
                 }
                 is ListEntry.AlbumEntry -> {
+                    holder.iconBadge.tag = null
                     holder.iconBadge.scaleType = ImageView.ScaleType.CENTER_CROP
                     holder.iconBadge.setPadding(0, 0, 0, 0)
                     holder.iconBadge.setImageResource(R.drawable.ic_default_album_cover)
@@ -1125,6 +1134,7 @@ class LibraryView(
                     holder.bindCount(entry.group.tracks.size)
                 }
                 is ListEntry.ArtistEntry -> {
+                    holder.iconBadge.tag = null
                     holder.iconBadge.scaleType = ImageView.ScaleType.CENTER_CROP
                     holder.iconBadge.setPadding(0, 0, 0, 0)
                     holder.iconBadge.setImageResource(R.drawable.ic_default_album_cover)
@@ -1134,6 +1144,7 @@ class LibraryView(
                     holder.bindCount(entry.group.tracks.size)
                 }
                 is ListEntry.PlaylistEntry -> {
+                    holder.iconBadge.tag = null
                     holder.iconBadge.scaleType = ImageView.ScaleType.CENTER_INSIDE
                     holder.iconBadge.setPadding(badgePad, badgePad, badgePad, badgePad)
                     holder.iconBadge.setImageResource(R.drawable.ic_playlist)
@@ -1202,7 +1213,79 @@ class LibraryView(
 
         private companion object {
             val TYPEFACE_MEDIUM: Typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            val TINT_WHITE_80: ColorStateList = ColorStateList.valueOf(0xCCFFFFFF.toInt())
+        }
+    }
+
+    /**
+     * Async 96x96 track thumbnail loader backed by LRU caches and URI-tag verification
+     * so fast scrolling never swaps artwork between recycled rows.
+     */
+    private object TrackThumbnailLoader {
+        private const val THUMB_SIZE_PX = 96
+        private val bitmapCache = LruCache<String, Bitmap>(96)
+        private val missingCache = LruCache<String, Boolean>(256)
+        private val mainHandler = Handler(Looper.getMainLooper())
+        private val executor = Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "LagukuTrackThumb").apply { isDaemon = true }
+        }
+
+        fun bind(imageView: ImageView, track: Track) {
+            val key = track.contentUri.ifBlank { track.path }
+            imageView.tag = key
+            val cached = bitmapCache.get(key)?.takeIf { !it.isRecycled }
+            if (cached != null) {
+                imageView.setImageBitmap(cached)
+                return
+            }
+            imageView.setImageResource(R.drawable.ic_default_album_cover)
+            if (track.path.isBlank() || missingCache.get(key) == true) return
+
+            val filePath = track.path
+            executor.execute {
+                val again = bitmapCache.get(key)?.takeIf { !it.isRecycled }
+                if (again != null) {
+                    mainHandler.post {
+                        if (imageView.tag == key) imageView.setImageBitmap(again)
+                    }
+                    return@execute
+                }
+                val bytes = runCatching { BinaryTagReader.read(File(filePath)).artworkBytes }.getOrNull()
+                val bmp = bytes?.let { decodeThumbnail(it) }
+                if (bmp == null) {
+                    missingCache.put(key, true)
+                    return@execute
+                }
+                bitmapCache.put(key, bmp)
+                mainHandler.post {
+                    if (imageView.tag == key) {
+                        imageView.setImageBitmap(bmp)
+                    }
+                }
+            }
+        }
+
+        private fun decodeThumbnail(bytes: ByteArray): Bitmap? {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+            val w = bounds.outWidth
+            val h = bounds.outHeight
+            if (w <= 0 || h <= 0) return null
+
+            var sampleSize = 1
+            while (w / sampleSize > THUMB_SIZE_PX * 2 && h / sampleSize > THUMB_SIZE_PX * 2) {
+                sampleSize *= 2
+            }
+            val opts = BitmapFactory.Options().apply {
+                inSampleSize = sampleSize
+                inPreferredConfig = Bitmap.Config.ARGB_8888
+            }
+            val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts) ?: return null
+            if (decoded.width <= THUMB_SIZE_PX * 2 && decoded.height <= THUMB_SIZE_PX * 2) {
+                return decoded
+            }
+            val scaled = Bitmap.createScaledBitmap(decoded, THUMB_SIZE_PX, THUMB_SIZE_PX, true)
+            if (scaled !== decoded) decoded.recycle()
+            return scaled
         }
     }
 }

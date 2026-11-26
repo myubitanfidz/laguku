@@ -3,10 +3,15 @@ package com.laguku.player.ui.player
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.res.ColorStateList
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.RectF
 import android.graphics.Typeface
 import android.text.TextUtils
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
+import android.view.MotionEvent
 import android.view.View
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
@@ -25,6 +30,7 @@ import com.laguku.player.service.BluetoothSettings
 import com.laguku.player.ui.glass.CoverPaletteExtractor
 import com.laguku.player.ui.glass.LiquidGlassDrawable
 import com.laguku.player.ui.motion.SpringAnimatorHelper
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
@@ -71,6 +77,8 @@ class AudioLabSheetView(
     private val tabViews = ArrayList<Pair<LabTab, TextView>>(3)
     private val scrollView = ScrollView(context)
     private val bodyContainer = LinearLayout(context)
+    private val eqBandSliders = ArrayList<VerticalEqBandView>(TenBandBiquadEq.BAND_COUNT)
+    private val eqBandValueLabels = ArrayList<TextView>(TenBandBiquadEq.BAND_COUNT)
 
     init {
         setBackgroundColor(0x9904060A.toInt())
@@ -215,6 +223,9 @@ class AudioLabSheetView(
     }
 
     private fun renderEqTab() {
+        eqBandSliders.clear()
+        eqBandValueLabels.clear()
+
         addToggleRow("Aktifkan Equalizer 10-Band", dspConfig.eqEnabled) { checked ->
             dspConfig = dspConfig.copy(eqEnabled = checked)
             callbacks?.onDspConfigChanged(dspConfig)
@@ -241,7 +252,15 @@ class AudioLabSheetView(
                     val preset = TenBandBiquadEq.PRESETS[presetName] ?: return@setOnClickListener
                     dspConfig = dspConfig.copy(eqEnabled = true, eqBandsDb = preset.copyOf())
                     callbacks?.onDspConfigChanged(dspConfig)
-                    renderActiveTab()
+                    if (eqBandSliders.size == TenBandBiquadEq.BAND_COUNT) {
+                        for (idx in 0 until TenBandBiquadEq.BAND_COUNT) {
+                            val v = preset[idx]
+                            eqBandSliders[idx].setDb(v, animate = true)
+                            eqBandValueLabels[idx].text = formatCompactDb(v)
+                        }
+                    } else {
+                        renderActiveTab()
+                    }
                 }
             }
             presetRow.addView(chip, LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply {
@@ -251,26 +270,71 @@ class AudioLabSheetView(
         presetScroll.addView(presetRow)
         bodyContainer.addView(presetScroll)
 
+        // Horizontal 10-band EQ deck (31 Hz -> 16 kHz) in thumb zone
+        val eqDeckScroll = HorizontalScrollView(context).apply {
+            isFillViewport = true
+            isHorizontalScrollBarEnabled = false
+            setPadding(0, dp(4), 0, dp(8))
+        }
+        val eqDeckRow = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_HORIZONTAL
+        }
+
         for (i in 0 until TenBandBiquadEq.BAND_COUNT) {
             val hz = TenBandBiquadEq.BAND_FREQUENCIES_HZ[i].toInt()
-            val label = if (hz >= 1000) "${hz / 1000} kHz" else "$hz Hz"
+            val freqLabel = if (hz >= 1000) "${hz / 1000}k" else "$hz"
             val currentDb = dspConfig.eqBandsDb[i]
-            addSliderRow(
-                label = label,
-                initialValueText = formatDb(currentDb),
-                maxProgress = 240,
-                initialProgress = ((currentDb + 12f) * 10f).roundToInt().coerceIn(0, 240)
-            ) { progress, tv, fromUser ->
-                val db = (progress - 120) / 10f
-                tv.text = formatDb(db)
-                if (fromUser) {
-                    val nextBands = dspConfig.eqBandsDb.copyOf()
-                    nextBands[i] = db
-                    dspConfig = dspConfig.copy(eqBandsDb = nextBands)
-                    callbacks?.onDspConfigChanged(dspConfig)
+
+            val col = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_HORIZONTAL
+                setPadding(dp(2), dp(4), dp(2), dp(4))
+            }
+            val valTv = TextView(context).apply {
+                text = formatCompactDb(currentDb)
+                setTextColor(0xE6FFFFFF.toInt())
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
+                fontFeatureSettings = "tnum"
+                gravity = Gravity.CENTER
+                maxLines = 1
+            }
+            val bandSlider = VerticalEqBandView(context).apply {
+                setAccentColor(palette.accentGlow)
+                setDb(currentDb, animate = false)
+                onDbChanged = { db, fromUser ->
+                    valTv.text = formatCompactDb(db)
+                    if (fromUser) {
+                        val nextBands = dspConfig.eqBandsDb.copyOf()
+                        nextBands[i] = db
+                        dspConfig = dspConfig.copy(eqBandsDb = nextBands)
+                        callbacks?.onDspConfigChanged(dspConfig)
+                    }
                 }
             }
+            val freqTv = TextView(context).apply {
+                text = freqLabel
+                setTextColor(0xA3FFFFFF.toInt())
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                gravity = Gravity.CENTER
+                maxLines = 1
+            }
+
+            eqBandValueLabels.add(valTv)
+            eqBandSliders.add(bandSlider)
+
+            col.addView(valTv, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
+            col.addView(bandSlider, LinearLayout.LayoutParams(dp(40), dp(148)).apply {
+                topMargin = dp(4)
+                bottomMargin = dp(4)
+            })
+            col.addView(freqTv, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
+            eqDeckRow.addView(col, LinearLayout.LayoutParams(dp(42), LayoutParams.WRAP_CONTENT, 1f))
         }
+
+        eqDeckScroll.addView(eqDeckRow)
+        bodyContainer.addView(eqDeckScroll, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
     }
 
     private fun renderAcousticsBtTab() {
@@ -508,9 +572,13 @@ class AudioLabSheetView(
         }
     }
 
-    private fun formatDb(db: Float): String {
+    private fun formatCompactDb(db: Float): String {
         val rounded = (db * 10f).roundToInt() / 10f
-        return if (rounded > 0f) "+$rounded dB" else "$rounded dB"
+        return when {
+            rounded > 0f -> "+$rounded"
+            rounded == 0f -> "0.0"
+            else -> "$rounded"
+        }
     }
 
     private fun formatBalance(bal: Float): String {
@@ -525,8 +593,159 @@ class AudioLabSheetView(
     private fun applyPalette(newPalette: CoverPalette) {
         sheetGlass.setPalette(newPalette)
         sheetGlass.setTintProfile(baseFraction = 0.88f, accentFraction = 0.14f)
+        for (slider in eqBandSliders) {
+            slider.setAccentColor(newPalette.accentGlow)
+        }
         updateTabVisuals()
     }
 
     private fun dp(value: Int): Int = (value * density).toInt()
+
+    /**
+     * Vertical EQ band fader with zero allocations inside [onDraw] / [onTouchEvent],
+     * 0 dB center detent haptic, and spring interpolation when presets apply.
+     */
+    private class VerticalEqBandView(context: Context) : View(context) {
+        var onDbChanged: ((Float, Boolean) -> Unit)? = null
+
+        private val density = resources.displayMetrics.density
+        private var currentDb: Float = 0f
+        private var lastDetentSign: Int = 0
+
+        private val trackPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL
+            color = 0x33FFFFFF
+        }
+        private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL
+            color = CoverPaletteExtractor.defaultPalette().accentGlow
+        }
+        private val centerTickPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = (1.2f * density).coerceAtLeast(1f)
+            color = 0x66FFFFFF
+        }
+        private val thumbPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL
+            color = 0xFFFFFFFF.toInt()
+        }
+        private val trackRect = RectF()
+        private val fillRect = RectF()
+        private val thumbRect = RectF()
+
+        fun setAccentColor(color: Int) {
+            if (fillPaint.color != color) {
+                fillPaint.color = color
+                invalidate()
+            }
+        }
+
+        fun setDb(db: Float, animate: Boolean) {
+            val clamped = db.coerceIn(-12f, 12f)
+            if (!animate || SpringAnimatorHelper.isReducedMotionEnabled(context)) {
+                SpringAnimatorHelper.cancelSpring(this, 1)
+                currentDb = clamped
+                invalidate()
+            } else {
+                SpringAnimatorHelper.animateSpring(
+                    key = this,
+                    start = currentDb,
+                    target = clamped,
+                    stiffness = SpringAnimatorHelper.SPRING_STIFFNESS,
+                    dampingRatio = SpringAnimatorHelper.SPRING_DAMPING_RATIO,
+                    valueThreshold = 0.05f,
+                    channel = 1,
+                    onUpdate = { v ->
+                        currentDb = v.coerceIn(-12f, 12f)
+                        invalidate()
+                    }
+                )
+            }
+        }
+
+        override fun onDetachedFromWindow() {
+            SpringAnimatorHelper.cancelSpring(this, 1)
+            super.onDetachedFromWindow()
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            val cx = width * 0.5f
+            val vPad = 10f * density
+            val top = vPad
+            val bottom = (height - vPad).coerceAtLeast(top + 8f)
+            val span = bottom - top
+            val midY = top + span * 0.5f
+            val trackHalfW = 2.2f * density
+
+            trackRect.set(cx - trackHalfW, top, cx + trackHalfW, bottom)
+            canvas.drawRoundRect(trackRect, trackHalfW, trackHalfW, trackPaint)
+
+            canvas.drawLine(cx - 7f * density, midY, cx + 7f * density, midY, centerTickPaint)
+
+            val norm = (currentDb / 12f).coerceIn(-1f, 1f)
+            val thumbY = midY - norm * (span * 0.5f)
+            if (abs(thumbY - midY) > 1f) {
+                fillRect.set(
+                    cx - trackHalfW,
+                    minOf(midY, thumbY),
+                    cx + trackHalfW,
+                    maxOf(midY, thumbY)
+                )
+                canvas.drawRoundRect(fillRect, trackHalfW, trackHalfW, fillPaint)
+            }
+
+            val thumbHalfW = 9f * density
+            val thumbHalfH = 4.5f * density
+            thumbRect.set(cx - thumbHalfW, thumbY - thumbHalfH, cx + thumbHalfW, thumbY + thumbHalfH)
+            canvas.drawRoundRect(thumbRect, thumbHalfH, thumbHalfH, thumbPaint)
+        }
+
+        @SuppressLint("ClickableViewAccessibility")
+        override fun onTouchEvent(event: MotionEvent): Boolean {
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    SpringAnimatorHelper.cancelSpring(this, 1)
+                    parent?.requestDisallowInterceptTouchEvent(true)
+                    updateFromY(event.y)
+                    return true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    updateFromY(event.y)
+                    return true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    parent?.requestDisallowInterceptTouchEvent(false)
+                    if (event.actionMasked == MotionEvent.ACTION_UP) performClick()
+                    return true
+                }
+            }
+            return super.onTouchEvent(event)
+        }
+
+        override fun performClick(): Boolean = super.performClick()
+
+        private fun updateFromY(y: Float) {
+            val vPad = 10f * density
+            val top = vPad
+            val bottom = (height - vPad).coerceAtLeast(top + 8f)
+            val frac = ((bottom - y) / (bottom - top)).coerceIn(0f, 1f)
+            val rawDb = (frac * 24f - 12f).coerceIn(-12f, 12f)
+            val stepped = (rawDb * 2f).roundToInt() / 2f
+            val sign = when {
+                stepped > 0.25f -> 1
+                stepped < -0.25f -> -1
+                else -> 0
+            }
+            if (sign == 0 && lastDetentSign != 0) {
+                performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+            }
+            lastDetentSign = sign
+            if (currentDb != stepped) {
+                currentDb = stepped
+                onDbChanged?.invoke(stepped, true)
+                invalidate()
+            }
+        }
+    }
 }

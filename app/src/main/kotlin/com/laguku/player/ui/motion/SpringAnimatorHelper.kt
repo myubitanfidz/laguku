@@ -42,6 +42,16 @@ object SpringAnimatorHelper {
     const val SHEET_ENTER_DURATION_MS = 340L
     const val SHEET_EXIT_DURATION_MS = 280L
 
+    object AmoledTransitionMath {
+        const val AMOLED_STIFFNESS = 380f
+        const val AMOLED_DAMPING_RATIO = 0.85f
+
+        fun computeOverlayAlpha(progress: Float): Float = progress.coerceIn(0f, 1f)
+
+        fun computeRimContrastFactor(progress: Float): Float =
+            1f + 0.40f * progress.coerceIn(0f, 1f)
+    }
+
     private const val CHANNEL_SCALE = 0
     private const val CHANNEL_REVEAL = 1
     private const val CHANNEL_BACKDROP_IN = 2
@@ -236,6 +246,10 @@ object SpringAnimatorHelper {
             choreographerRunning = false
             lastFrameNanos = 0L
         }
+    }
+
+    fun getSpringValue(key: Any, channel: Int): Float? {
+        return findTask(key, channel)?.solver?.value
     }
 
     fun springScale(view: View, targetScale: Float) {

@@ -42,6 +42,7 @@ class LibraryUtilitiesSheetView(
         fun onExportBackupJson()
         fun onImportBackupJson()
         fun onUnhideBlacklistedFolder(folderPath: String)
+        fun onPinWidgetToHomeScreen()
     }
 
     var callbacks: Callbacks? = null
@@ -88,6 +89,9 @@ class LibraryUtilitiesSheetView(
         }
         addActionButton("Pindai Kesehatan Koleksi (Duplikat & Korup)") {
             callbacks?.onRunHealthScan()
+        }
+        addActionButton(context.getString(R.string.pin_widget_label)) {
+            callbacks?.onPinWidgetToHomeScreen()
         }
 
         addToggleRow("Sembunyikan Audio < 30 Detik", minDurationEnabled) { checked ->

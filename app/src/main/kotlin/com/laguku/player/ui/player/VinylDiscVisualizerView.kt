@@ -163,6 +163,16 @@ class VinylDiscVisualizerView(context: Context) : View(context) {
         invalidate()
     }
 
+    fun animateTrackTransition(direction: Int) {
+        if (direction == 0 || SpringAnimatorHelper.isReducedMotionEnabled(context)) return
+        val dir = direction.coerceIn(-1, 1)
+        SpringAnimatorHelper.springReveal(
+            this,
+            fromTranslationX = dir * 36f * density,
+            fromScale = 0.94f
+        )
+    }
+
     fun setCoverArtwork(bitmap: Bitmap?) {
         discBitmap = bitmap?.takeIf { !it.isRecycled }
         discShader = discBitmap?.let { BitmapShader(it, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP) }
@@ -371,25 +381,6 @@ class VinylDiscVisualizerView(context: Context) : View(context) {
                     }
                     if (abs(dx) > touchSlop * 4 && abs(dx) > abs(dy) * 1.4f) {
                         swipeHandled = true
-                        val shift = if (dx < 0) -18f * density else 18f * density
-                        SpringAnimatorHelper.animateSpring(
-                            key = this,
-                            start = 0f,
-                            target = shift,
-                            stiffness = 520f,
-                            dampingRatio = 0.85f,
-                            valueThreshold = 0.3f,
-                            onUpdate = { tx -> translationX = tx },
-                            onEnd = {
-                                SpringAnimatorHelper.animateSpring(
-                                    key = this,
-                                    start = translationX,
-                                    target = 0f,
-                                    valueThreshold = 0.3f,
-                                    onUpdate = { tx -> translationX = tx }
-                                )
-                            }
-                        )
                         if (dx < 0) onNext?.invoke() else onPrevious?.invoke()
                         return true
                     }
