@@ -63,10 +63,12 @@ data class AlbumGroup(val id: Long, val name: String, val artist: String, val tr
 data class FolderNode(val path: String, val name: String, val tracks: List<Track>)
 data class ArtistGroup(val name: String, val tracks: List<Track>)
 data class Playlist(val name: String, val filePath: String, val tracks: List<Track>)
-data class WordToken(val startMs: Long, val text: String)
+data class WordToken(val startMs: Long, val text: String, val endMs: Long? = null)
+typealias WordTiming = WordToken
 
 enum class LyricSource(val label: String) {
     NONE(""),
+    SIDECAR_TTML("File .ttml"),
     EMBEDDED_TAG("Tag Audio"),
     SIDECAR_LRC("File .lrc"),
     INTERNAL_FALLBACK("Lokal")
@@ -77,7 +79,8 @@ data class LyricLine(
     val text: String,
     val words: List<WordToken> = emptyList(),
     val translation: String? = null,
-    val romanizedText: String? = null
+    val romanizedText: String? = null,
+    val endMs: Long? = null
 ) {
     val primaryText: String get() = text
     val translatedText: String? get() = translation

@@ -988,7 +988,7 @@ class MainActivity : Activity(), AudioEngine.Listener, LibraryView.Callbacks, Pl
         backgroundExecutor.execute {
             val file = File(trackPath)
             val embedded = runCatching { BinaryTagReader.readEmbedded(file) }.getOrNull()
-            val parsedLyrics = LrcParser.loadLyrics(file, getInternalLyricsDir(), embedded?.lyrics)
+            val parsedLyrics = LrcParser.loadTrackLyrics(file, getInternalLyricsDir())
             val waveform = WaveformPillSeekBarView.extractWaveformBars(
                 file,
                 track.contentUri.ifBlank { trackPath }

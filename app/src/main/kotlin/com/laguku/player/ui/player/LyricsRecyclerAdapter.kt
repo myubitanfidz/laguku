@@ -175,7 +175,7 @@ class LyricsRecyclerAdapter(
                     val token = words[i]
                     val tokenLen = token.text.length.coerceAtLeast(1)
                     val tokenStart = token.startMs
-                    val tokenEnd = if (i + 1 < words.size) {
+                    val tokenEnd = token.endMs?.coerceAtLeast(tokenStart + 40L) ?: if (i + 1 < words.size) {
                         words[i + 1].startMs.coerceAtLeast(tokenStart + 120L)
                     } else {
                         val fallbackEnd = if (lineEndMs > tokenStart) lineEndMs else tokenStart + 420L

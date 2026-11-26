@@ -32,6 +32,19 @@ object LibraryScanner {
     )
     private val LOSSLESS_CODECS: Set<String> = setOf("FLAC", "ALAC", "WAV", "PCM", "AIFF", "DSD")
 
+    fun resolveSidecarLyricFile(audioFile: File): File? {
+        val parent = audioFile.parentFile ?: return null
+        val ttml = File(parent, "${audioFile.nameWithoutExtension}.ttml")
+        if (ttml.isFile && ttml.canRead() && ttml.length() in 1L..BinaryTagReader.MAX_TEXT_BYTES.toLong()) {
+            return ttml
+        }
+        val lrc = File(parent, "${audioFile.nameWithoutExtension}.lrc")
+        if (lrc.isFile && lrc.canRead() && lrc.length() in 1L..BinaryTagReader.MAX_TEXT_BYTES.toLong()) {
+            return lrc
+        }
+        return null
+    }
+
     fun scanMediaStore(context: Context): List<Track> {
         val tracks = mutableListOf<Track>()
         val projection = arrayOf(

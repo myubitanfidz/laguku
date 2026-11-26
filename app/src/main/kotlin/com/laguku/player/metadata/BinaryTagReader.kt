@@ -55,6 +55,37 @@ object BinaryTagReader {
         }
     }
 
+    /**
+     * Reads only embedded lyrics from [file] by streaming container headers and skipping
+     * non-lyric blocks such as FLAC PICTURE or ID3 APIC frames.
+     */
+    fun readEmbeddedLyricsStreaming(file: File): String? {
+        if (!file.exists() || !file.isFile || !file.canRead()) return null
+        return try {
+            RandomAccessFile(file, "r").use { raf ->
+                readFromSource(RafSource(raf), file.extension.lowercase(), lyricsOnly = true)
+                    .lyrics?.ifBlank { null }
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    fun readEmbeddedLyricsFromBytes(data: ByteArray, extension: String = ""): String? {
+        if (data.isEmpty()) return null
+        return try {
+            readFromSource(ByteArraySource(data), extension.lowercase(), lyricsOnly = true)
+                .lyrics?.ifBlank { null }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    fun readSidecarTtml(audioFile: File): String? {
+        val parent = audioFile.parentFile ?: return null
+        return readTextSidecar(File(parent, "${audioFile.nameWithoutExtension}.ttml"))
+    }
+
     fun readSidecarLrc(audioFile: File): String? {
         val parent = audioFile.parentFile ?: return null
         return readTextSidecar(File(parent, "${audioFile.nameWithoutExtension}.lrc"))
@@ -63,7 +94,7 @@ object BinaryTagReader {
     fun readFromBytes(data: ByteArray, extension: String = ""): TagMetadata {
         if (data.isEmpty()) return TagMetadata()
         return try {
-            readFromSource(ByteArraySource(data), extension.lowercase())
+            readFromSource(ByteArraySource(data), extension.lowercase(), lyricsOnly = false)
         } catch (_: Exception) {
             TagMetadata()
         }
@@ -102,7 +133,7 @@ object BinaryTagReader {
         return null
     }
 
-    private fun readFromSource(source: BinarySource, extension: String): TagMetadata {
+    private fun readFromSource(source: BinarySource, extension: String, lyricsOnly: Boolean = false): TagMetadata {
         val len = source.length
         if (len < 4L) return TagMetadata()
 
@@ -110,10 +141,10 @@ object BinaryTagReader {
         val acc = TagAccumulator()
 
         when {
-            header4 == "fLaC" -> parseFlac(source, acc)
+            header4 == "fLaC" -> parseFlac(source, acc, lyricsOnly)
             header4 == "OggS" -> parseOgg(source, acc)
-            header4.startsWith("ID3") -> parseId3v2(source, 0L, len, acc)
-            header4 == "RIFF" && len >= 12L && source.readAscii(8L, 4) == "WAVE" -> parseWav(source, acc)
+            header4.startsWith("ID3") -> parseId3v2(source, 0L, len, acc, lyricsOnly)
+            header4 == "RIFF" && len >= 12L && source.readAscii(8L, 4) == "WAVE" -> parseWav(source, acc, lyricsOnly)
             len >= 8L && source.readAscii(4L, 4) == "ftyp" -> parseMp4(source, acc)
             extension == "mp3" -> {
                 // No ID3v2 at start; nothing to parse cleanly.
@@ -124,7 +155,7 @@ object BinaryTagReader {
 
     // --- FLAC ---
 
-    private fun parseFlac(source: BinarySource, acc: TagAccumulator) {
+    private fun parseFlac(source: BinarySource, acc: TagAccumulator, lyricsOnly: Boolean = false) {
         var cursor = 4L
         val len = source.length
         while (cursor + 4L <= len) {
@@ -142,9 +173,10 @@ object BinaryTagReader {
             if (blockType == 4 && blockSize > 0 && blockSize <= MAX_TEXT_BYTES) {
                 val blockBytes = source.readBytes(dataStart, blockSize)
                 if (blockBytes != null) {
-                    parseVorbisComments(blockBytes, 0, blockBytes.size, acc)
+                    parseVorbisComments(blockBytes, 0, blockBytes.size, acc, lyricsOnly)
                 }
-            } else if (blockType == 6 && blockSize > 0 && blockSize <= MAX_ARTWORK_BYTES) {
+                if (lyricsOnly) break
+            } else if (!lyricsOnly && blockType == 6 && blockSize > 0 && blockSize <= MAX_ARTWORK_BYTES) {
                 val blockBytes = source.readBytes(dataStart, blockSize)
                 if (blockBytes != null) {
                     parseFlacPictureBlock(blockBytes, 0, blockBytes.size, acc)
@@ -156,7 +188,13 @@ object BinaryTagReader {
         }
     }
 
-    private fun parseVorbisComments(data: ByteArray, start: Int, end: Int, acc: TagAccumulator) {
+    private fun parseVorbisComments(
+        data: ByteArray,
+        start: Int,
+        end: Int,
+        acc: TagAccumulator,
+        lyricsOnly: Boolean = false
+    ) {
         var pos = start
         if (pos + 4 > end) return
         val vendorLen = readUInt32LE(data, pos)
@@ -198,7 +236,12 @@ object BinaryTagReader {
             }
             val key = String(data, entryStart, keyLen, Charsets.UTF_8).uppercase()
 
-            if (key == "METADATA_BLOCK_PICTURE") {
+            if (lyricsOnly) {
+                if ((key == "LYRICS" || key == "SYNCEDLYRICS" || key == "UNSYNCEDLYRICS") && valLen <= MAX_TEXT_BYTES) {
+                    val value = String(data, valStart, valLen, Charsets.UTF_8)
+                    applyVorbisTag(key, value, acc)
+                }
+            } else if (key == "METADATA_BLOCK_PICTURE") {
                 val maxBase64Len = (MAX_ARTWORK_BYTES.toLong() * 4L) / 3L + 1024L
                 if (valLen in 1..maxBase64Len.toInt()) {
                     try {
@@ -387,7 +430,7 @@ object BinaryTagReader {
 
     // --- WAV (RIFF) ---
 
-    private fun parseWav(source: BinarySource, acc: TagAccumulator) {
+    private fun parseWav(source: BinarySource, acc: TagAccumulator, lyricsOnly: Boolean = false) {
         var cursor = 12L
         val len = source.length
         while (cursor + 8L <= len) {
@@ -398,7 +441,7 @@ object BinaryTagReader {
             if (chunkSize < 0L || dataStart + chunkSize > len) break
 
             if (chunkId.equals("id3 ", ignoreCase = true)) {
-                parseId3v2(source, dataStart, dataStart + chunkSize, acc)
+                parseId3v2(source, dataStart, dataStart + chunkSize, acc, lyricsOnly)
                 return
             }
 
@@ -409,7 +452,13 @@ object BinaryTagReader {
 
     // --- ID3v2.3 / ID3v2.4 ---
 
-    private fun parseId3v2(source: BinarySource, startOffset: Long, maxEnd: Long, acc: TagAccumulator) {
+    private fun parseId3v2(
+        source: BinarySource,
+        startOffset: Long,
+        maxEnd: Long,
+        acc: TagAccumulator,
+        lyricsOnly: Boolean = false
+    ) {
         if (startOffset + 10L > maxEnd) return
         val header = source.readBytes(startOffset, 10) ?: return
         if (header[0] != 'I'.code.toByte() ||
@@ -436,9 +485,9 @@ object BinaryTagReader {
             val boundedLen = (tagEnd - tagBodyStart).coerceAtMost((MAX_ARTWORK_BYTES + MAX_TEXT_BYTES).toLong()).toInt()
             val raw = source.readBytes(tagBodyStart, boundedLen) ?: return
             val deunsynced = removeUnsync(raw)
-            parseId3Frames(ByteArraySource(deunsynced), 0L, deunsynced.size.toLong(), majorVersion, hasExtHeader, acc)
+            parseId3Frames(ByteArraySource(deunsynced), 0L, deunsynced.size.toLong(), majorVersion, hasExtHeader, acc, lyricsOnly)
         } else {
-            parseId3Frames(source, tagBodyStart, tagEnd, majorVersion, hasExtHeader, acc)
+            parseId3Frames(source, tagBodyStart, tagEnd, majorVersion, hasExtHeader, acc, lyricsOnly)
         }
     }
 
@@ -448,7 +497,8 @@ object BinaryTagReader {
         tagEnd: Long,
         majorVersion: Int,
         hasExtHeader: Boolean,
-        acc: TagAccumulator
+        acc: TagAccumulator,
+        lyricsOnly: Boolean = false
     ) {
         var cursor = bodyStart
         if (hasExtHeader) {
@@ -478,19 +528,22 @@ object BinaryTagReader {
             val dataStart = cursor + 10L
             if (rawSize <= 0L || dataStart + rawSize > tagEnd) break
 
-            val formatFlags = frameHdr[9].toInt() and 0xFF
-            val isCompressed = (majorVersion == 3 && (frameHdr[9].toInt() and 0x80) != 0) ||
-                (majorVersion >= 4 && (formatFlags and 0x08) != 0)
-            val isEncrypted = (majorVersion == 3 && (frameHdr[9].toInt() and 0x40) != 0) ||
-                (majorVersion >= 4 && (formatFlags and 0x04) != 0)
+            val wantFrame = !lyricsOnly || frameId == "SYLT" || frameId == "USLT" || frameId == "TXXX"
+            if (wantFrame) {
+                val formatFlags = frameHdr[9].toInt() and 0xFF
+                val isCompressed = (majorVersion == 3 && (frameHdr[9].toInt() and 0x80) != 0) ||
+                    (majorVersion >= 4 && (formatFlags and 0x08) != 0)
+                val isEncrypted = (majorVersion == 3 && (frameHdr[9].toInt() and 0x40) != 0) ||
+                    (majorVersion >= 4 && (formatFlags and 0x04) != 0)
 
-            val maxAllowed = if (frameId == "APIC") MAX_ARTWORK_BYTES else MAX_TEXT_BYTES
-            if (!isCompressed && !isEncrypted && rawSize <= maxAllowed.toLong()) {
-                val rawPayload = source.readBytes(dataStart, rawSize.toInt())
-                if (rawPayload != null) {
-                    val payload = decodeId3FramePayload(rawPayload, majorVersion, formatFlags)
-                    if (payload != null && payload.isNotEmpty()) {
-                        handleId3Frame(frameId, payload, acc)
+                val maxAllowed = if (frameId == "APIC") MAX_ARTWORK_BYTES else MAX_TEXT_BYTES
+                if (!isCompressed && !isEncrypted && rawSize <= maxAllowed.toLong()) {
+                    val rawPayload = source.readBytes(dataStart, rawSize.toInt())
+                    if (rawPayload != null) {
+                        val payload = decodeId3FramePayload(rawPayload, majorVersion, formatFlags)
+                        if (payload != null && payload.isNotEmpty()) {
+                            handleId3Frame(frameId, payload, acc)
+                        }
                     }
                 }
             }

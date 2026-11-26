@@ -4,6 +4,7 @@ import com.laguku.player.lyrics.LrcParser
 import com.laguku.player.metadata.BinaryTagReader
 import com.laguku.player.model.AudioQualityInfo
 import com.laguku.player.model.LyricLine
+import com.laguku.player.model.LyricSource
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -457,6 +458,130 @@ class BinaryTagAndLrcTest {
         assertEquals(0, LrcParser.findActiveLineIndex(large, 100L))
         assertEquals(4999, LrcParser.findActiveLineIndex(large, 500_050L))
         assertEquals(9999, LrcParser.findActiveLineIndex(large, 2_000_000L))
+    }
+
+    // --- TTML & Streaming FLAC/MP3 Lyrics Pipeline ---
+
+    @Test
+    fun parsesTtmlWordTimingsParagraphsAndEntities() {
+        val ttml = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <tt xmlns="http://www.w3.org/ns/ttml" xmlns:ttm="http://www.w3.org/ns/ttml#metadata">
+              <body>
+                <div>
+                  <p begin="00:04.500" end="00:08.200">
+                    <span begin="00:04.500" end="00:05.100">Light</span>
+                    <span begin="00:05.150" end="00:06.000">bends &amp; flows</span>
+                    <span ttm:role="x-translation">Cahaya membias</span>
+                  </p>
+                  <p begin="10.25s" end="14500ms">Second line</p>
+                </div>
+              </body>
+            </tt>
+        """.trimIndent()
+
+        val parsed = LrcParser.parseTtml(ttml)
+        assertTrue(parsed.isSynced)
+        assertEquals(2, parsed.lines.size)
+
+        val line1 = parsed.lines[0]
+        assertEquals(4_500L, line1.timestampMs)
+        assertEquals(8_200L, line1.endMs)
+        assertEquals("Light bends & flows", line1.text)
+        assertEquals("Cahaya membias", line1.translatedText)
+        assertEquals(2, line1.words.size)
+        assertEquals(4_500L, line1.words[0].startMs)
+        assertEquals(5_100L, line1.words[0].endMs)
+        assertEquals("Light ", line1.words[0].text)
+        assertEquals(5_150L, line1.words[1].startMs)
+        assertEquals(6_000L, line1.words[1].endMs)
+        assertEquals("bends & flows", line1.words[1].text)
+
+        val line2 = parsed.lines[1]
+        assertEquals(10_250L, line2.timestampMs)
+        assertEquals(14_500L, line2.endMs)
+        assertEquals("Second line", line2.text)
+    }
+
+    @Test
+    fun streamsFlacAndMp3LyricsWithoutReadingPictureOrApicPayloads() {
+        val flacOut = ByteArrayOutputStream()
+        flacOut.write("fLaC".toByteArray(Charsets.US_ASCII))
+        writeFlacMetaBlock(
+            flacOut,
+            isLast = false,
+            type = 4,
+            payload = buildVorbisCommentBlock("Laguku", listOf("LYRICS=[00:02.00]Streamed FLAC"))
+        )
+        writeFlacMetaBlock(
+            flacOut,
+            isLast = true,
+            type = 6,
+            payload = buildFlacPictureBlock(3, "image/jpeg", ByteArray(2048))
+        )
+        assertEquals(
+            "[00:02.00]Streamed FLAC",
+            BinaryTagReader.readEmbeddedLyricsFromBytes(flacOut.toByteArray(), "flac")
+        )
+
+        val mp3Frames = ByteArrayOutputStream()
+        writeId3Frame(
+            mp3Frames,
+            "USLT",
+            byteArrayOf(0) + "eng".toByteArray(Charsets.US_ASCII) + byteArrayOf(0) +
+                "ISO-8859-1 Lyric".toByteArray(Charsets.ISO_8859_1),
+            syncsafe = false
+        )
+        writeId3Frame(
+            mp3Frames,
+            "APIC",
+            byteArrayOf(0) + "image/png".toByteArray(Charsets.ISO_8859_1) + byteArrayOf(0, 3, 0) + ByteArray(512),
+            syncsafe = false
+        )
+        val mp3Bytes = wrapId3Tag(versionMajor = 3, body = mp3Frames.toByteArray())
+        assertEquals(
+            "ISO-8859-1 Lyric",
+            BinaryTagReader.readEmbeddedLyricsFromBytes(mp3Bytes, "mp3")
+        )
+    }
+
+    @Test
+    fun loadTrackLyricsFollowsStrictTtmlThenLrcThenEmbeddedPriority() {
+        val dir = tempFolder.newFolder("track_lyrics_priority")
+        val flacFile = File(dir, "song.flac").apply {
+            val out = ByteArrayOutputStream()
+            out.write("fLaC".toByteArray(Charsets.US_ASCII))
+            writeFlacMetaBlock(
+                out,
+                isLast = true,
+                type = 4,
+                payload = buildVorbisCommentBlock("Laguku", listOf("LYRICS=[00:01.00]From Embedded"))
+            )
+            writeBytes(out.toByteArray())
+        }
+        val ttmlFile = File(dir, "song.ttml").apply {
+            writeText("<tt><body><div><p begin=\"00:02.00\" end=\"00:05.00\">From TTML</p></div></body></tt>")
+        }
+        val lrcFile = File(dir, "song.lrc").apply {
+            writeText("[00:03.00]From LRC")
+        }
+
+        // 1. .ttml wins over .lrc & embedded
+        val resTtml = LrcParser.loadTrackLyrics(flacFile)
+        assertEquals(LyricSource.SIDECAR_TTML, resTtml.source)
+        assertEquals("From TTML", resTtml.lines.first().primaryText)
+
+        // 2. .lrc wins over embedded when .ttml absent
+        ttmlFile.delete()
+        val resLrc = LrcParser.loadTrackLyrics(flacFile)
+        assertEquals(LyricSource.SIDECAR_LRC, resLrc.source)
+        assertEquals("From LRC", resLrc.lines.first().primaryText)
+
+        // 3. Embedded FLAC wins when sidecars absent
+        lrcFile.delete()
+        val resEmbedded = LrcParser.loadTrackLyrics(flacFile)
+        assertEquals(LyricSource.EMBEDDED_TAG, resEmbedded.source)
+        assertEquals("From Embedded", resEmbedded.lines.first().primaryText)
     }
 
     // --- Synthetic Binary Builders ---
