@@ -4,6 +4,10 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Rect
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
 import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
@@ -81,6 +85,55 @@ class InteractiveGlassScrubView(
         }
     }
 
+    class ScrubDwellController(val dwellDelayMs: Long = DWELL_DELAY_MS) {
+        companion object {
+            const val DWELL_DELAY_MS = 240L
+        }
+
+        var committedIndex: Int = 0
+            private set
+        var hoveredIndex: Int = 0
+            private set
+        var dwellCommitted: Boolean = false
+            private set
+        private var hoveredAtMs: Long = 0L
+
+        fun onTouchDown(initialSelectedIndex: Int) {
+            committedIndex = initialSelectedIndex
+            hoveredIndex = initialSelectedIndex
+            dwellCommitted = false
+            hoveredAtMs = 0L
+        }
+
+        fun onHoverSlot(index: Int, nowMs: Long): Boolean {
+            if (index == hoveredIndex) return false
+            hoveredIndex = index
+            hoveredAtMs = nowMs
+            dwellCommitted = false
+            return true
+        }
+
+        fun onDwellTimeout(nowMs: Long): Int? {
+            if (dwellCommitted || hoveredIndex == committedIndex) return null
+            if (nowMs - hoveredAtMs < dwellDelayMs) return null
+            committedIndex = hoveredIndex
+            dwellCommitted = true
+            return hoveredIndex
+        }
+
+        fun onTouchUp(targetIndex: Int, isCancel: Boolean): Int? {
+            val result = if (isCancel || (dwellCommitted && targetIndex == committedIndex)) {
+                null
+            } else {
+                committedIndex = targetIndex
+                targetIndex
+            }
+            dwellCommitted = false
+            hoveredAtMs = 0L
+            return result
+        }
+    }
+
     var onSlotPreviewChanged: ((Int) -> Unit)? = null
     var onSlotSelected: ((Int) -> Unit)? = null
 
@@ -93,6 +146,8 @@ class InteractiveGlassScrubView(
     private val containerGlass = LiquidGlassDrawable(context, cornerRadiusDp)
     private val indicatorGlass = LiquidGlassDrawable(context, (cornerRadiusDp - 6f).coerceAtLeast(14f))
     private val indicatorBounds = Rect()
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val dwellController = ScrubDwellController()
 
     private val slotsRow = LinearLayout(context).apply {
         orientation = LinearLayout.HORIZONTAL
@@ -111,8 +166,27 @@ class InteractiveGlassScrubView(
     private var indicatorInitialized: Boolean = false
 
     private var downX: Float = 0f
+    private var lastMoveX: Float = 0f
+    private var lastMoveTimeMs: Long = 0L
     private var isPressedScrub: Boolean = false
     private var hasDragged: Boolean = false
+
+    private val dwellRunnable = Runnable {
+        val committed = dwellController.onDwellTimeout(SystemClock.elapsedRealtime()) ?: return@Runnable
+        if (committed in slotCenters.indices) {
+            selectedIndex = committed
+            previewIndex = committed
+            indicatorGlass.setSpecularIntensity(1f)
+            val haptic = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                HapticFeedbackConstants.CONFIRM
+            } else {
+                HapticFeedbackConstants.CLOCK_TICK
+            }
+            performHapticFeedback(haptic)
+            onSlotSelected?.invoke(committed)
+            invalidate()
+        }
+    }
 
     init {
         background = containerGlass
@@ -209,15 +283,21 @@ class InteractiveGlassScrubView(
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (slotCenters.isEmpty()) return super.onTouchEvent(event)
+        val nowMs = SystemClock.elapsedRealtime()
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 parent?.requestDisallowInterceptTouchEvent(true)
                 downX = event.x
+                lastMoveX = event.x
+                lastMoveTimeMs = nowMs
                 isPressedScrub = true
                 hasDragged = false
                 previewIndex = selectedIndex
+                dwellController.onTouchDown(selectedIndex)
+                mainHandler.removeCallbacks(dwellRunnable)
                 performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
                 indicatorGlass.setTintProfile(baseFraction = 0.24f, accentFraction = 0.52f, preferAccentGlow = true)
+                indicatorGlass.setMotionState(0f, touchActive = true)
                 animateCapsuleScale(PRESS_SCALE_X, PRESS_SCALE_Y)
                 return true
             }
@@ -231,17 +311,27 @@ class InteractiveGlassScrubView(
                 if (hasDragged) {
                     SpringAnimatorHelper.cancelSpring(this, CHANNEL_CENTER)
                     SpringAnimatorHelper.cancelSpring(this, CHANNEL_WIDTH)
+                    val dtSec = ((nowMs - lastMoveTimeMs).coerceAtLeast(1L)) / 1000f
+                    val vx = (event.x - lastMoveX) / dtSec
+                    lastMoveX = event.x
+                    lastMoveTimeMs = nowMs
+
                     val firstC = slotCenters[0]
                     val lastC = slotCenters[slotCenters.lastIndex]
                     val clampedCenter = ScrubMath.computeRubberBand(event.x, firstC, lastC, maxOvershootPx)
                     capsuleCenterX = clampedCenter
                     capsuleWidth = ScrubMath.interpolateSlotWidth(clampedCenter, slotCenters, slotWidths)
+                    indicatorGlass.setMotionState(vx, touchActive = true)
 
                     val hovered = ScrubMath.nearestSlotIndex(clampedCenter, slotCenters)
-                    if (hovered != previewIndex) {
+                    if (dwellController.onHoverSlot(hovered, nowMs)) {
                         previewIndex = hovered
                         performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
                         onSlotPreviewChanged?.invoke(hovered)
+                        mainHandler.removeCallbacks(dwellRunnable)
+                        if (hovered != selectedIndex) {
+                            mainHandler.postDelayed(dwellRunnable, ScrubDwellController.DWELL_DELAY_MS)
+                        }
                     }
                     invalidate()
                 }
@@ -251,8 +341,12 @@ class InteractiveGlassScrubView(
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 if (!isPressedScrub) return false
                 isPressedScrub = false
+                mainHandler.removeCallbacks(dwellRunnable)
                 parent?.requestDisallowInterceptTouchEvent(false)
-                val target = if (hasDragged) {
+                val isCancel = event.actionMasked == MotionEvent.ACTION_CANCEL
+                val target = if (isCancel) {
+                    selectedIndex
+                } else if (hasDragged) {
                     ScrubMath.nearestSlotIndex(capsuleCenterX, slotCenters)
                 } else {
                     ScrubMath.nearestSlotIndex(event.x, slotCenters)
@@ -260,17 +354,36 @@ class InteractiveGlassScrubView(
                 selectedIndex = target
                 previewIndex = target
                 indicatorGlass.setTintProfile(baseFraction = 0.28f, accentFraction = 0.42f, preferAccentGlow = true)
+                indicatorGlass.setMotionState(0f, touchActive = false)
                 animateCapsuleScale(1f, 1f)
                 moveCapsuleToSlot(target, animate = true)
-                onSlotSelected?.invoke(target)
+                val commitIdx = dwellController.onTouchUp(target, isCancel)
+                if (commitIdx != null) {
+                    onSlotSelected?.invoke(commitIdx)
+                }
                 return true
             }
         }
         return super.onTouchEvent(event)
     }
 
-    override fun onDetachedFromWindow() {
+    fun cancelActiveInteractions() {
+        mainHandler.removeCallbacks(dwellRunnable)
+        isPressedScrub = false
+        hasDragged = false
         SpringAnimatorHelper.cancelSpring(this)
+        indicatorGlass.setMotionState(0f, touchActive = false)
+        capsuleScaleX = 1f
+        capsuleScaleY = 1f
+        if (selectedIndex in slotCenters.indices) {
+            capsuleCenterX = slotCenters[selectedIndex]
+            capsuleWidth = slotWidths[selectedIndex]
+        }
+        invalidate()
+    }
+
+    override fun onDetachedFromWindow() {
+        cancelActiveInteractions()
         super.onDetachedFromWindow()
     }
 
@@ -291,6 +404,8 @@ class InteractiveGlassScrubView(
             key = this,
             start = capsuleCenterX,
             target = targetX,
+            stiffness = SpringAnimatorHelper.SPRING_LOUPE_GLIDE.stiffness,
+            dampingRatio = SpringAnimatorHelper.SPRING_LOUPE_GLIDE.dampingRatio,
             valueThreshold = 0.25f,
             channel = CHANNEL_CENTER,
             onUpdate = { x ->
@@ -302,6 +417,8 @@ class InteractiveGlassScrubView(
             key = this,
             start = capsuleWidth,
             target = targetW,
+            stiffness = SpringAnimatorHelper.SPRING_LOUPE_GLIDE.stiffness,
+            dampingRatio = SpringAnimatorHelper.SPRING_LOUPE_GLIDE.dampingRatio,
             valueThreshold = 0.25f,
             channel = CHANNEL_WIDTH,
             onUpdate = { w ->
@@ -316,6 +433,8 @@ class InteractiveGlassScrubView(
             key = this,
             start = capsuleScaleX,
             target = targetX,
+            stiffness = SpringAnimatorHelper.SPRING_LOUPE_GLIDE.stiffness,
+            dampingRatio = SpringAnimatorHelper.SPRING_LOUPE_GLIDE.dampingRatio,
             channel = CHANNEL_SCALE_X,
             onUpdate = { sx ->
                 capsuleScaleX = sx
@@ -326,6 +445,8 @@ class InteractiveGlassScrubView(
             key = this,
             start = capsuleScaleY,
             target = targetY,
+            stiffness = SpringAnimatorHelper.SPRING_LOUPE_GLIDE.stiffness,
+            dampingRatio = SpringAnimatorHelper.SPRING_LOUPE_GLIDE.dampingRatio,
             channel = CHANNEL_SCALE_Y,
             onUpdate = { sy ->
                 capsuleScaleY = sy
@@ -336,7 +457,7 @@ class InteractiveGlassScrubView(
 
     private companion object {
         const val PRESS_SCALE_X = 1.06f
-        const val PRESS_SCALE_Y = 1.12f
+        const val PRESS_SCALE_Y = 1.06f
         const val CHANNEL_CENTER = 10
         const val CHANNEL_WIDTH = 11
         const val CHANNEL_SCALE_X = 12

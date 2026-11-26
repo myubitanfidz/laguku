@@ -2,6 +2,7 @@ package com.laguku.player
 
 import com.laguku.player.data.PlaybackStateStore
 import com.laguku.player.ui.glass.InteractiveGlassScrubView
+import com.laguku.player.ui.library.LibraryView
 import com.laguku.player.ui.motion.SpringAnimatorHelper
 import com.laguku.player.ui.player.LyricsRecyclerAdapter
 import com.laguku.player.ui.player.NowPlayingView
@@ -218,5 +219,48 @@ class MotionAndInteractiveUiTest {
         assertTrue(settled)
         assertEquals(137, scrolledPx)
         assertEquals(0f, accumulator.remainder, 0.0001f)
+    }
+
+    @Test
+    fun scrubDwellController_commitsAfter240msWithoutDoubleTriggerOnRelease() {
+        assertEquals(240L, InteractiveGlassScrubView.ScrubDwellController.DWELL_DELAY_MS)
+        val controller = InteractiveGlassScrubView.ScrubDwellController()
+
+        controller.onTouchDown(initialSelectedIndex = 0)
+        assertTrue(controller.onHoverSlot(2, nowMs = 1_000L))
+
+        // Before 240ms: dwell does not fire
+        assertEquals(null, controller.onDwellTimeout(1_239L))
+        assertFalse(controller.dwellCommitted)
+
+        // At 240ms: dwell commits slot 2 once
+        assertEquals(2, controller.onDwellTimeout(1_240L))
+        assertTrue(controller.dwellCommitted)
+
+        // Release on slot 2 must NOT double-trigger
+        assertEquals(null, controller.onTouchUp(targetIndex = 2, isCancel = false))
+
+        // Quick drag + release before 240ms commits once on UP
+        controller.onTouchDown(initialSelectedIndex = 2)
+        controller.onHoverSlot(1, nowMs = 2_000L)
+        assertEquals(1, controller.onTouchUp(targetIndex = 1, isCancel = false))
+
+        // Cancel never commits
+        controller.onTouchDown(initialSelectedIndex = 1)
+        controller.onHoverSlot(4, nowMs = 3_000L)
+        assertEquals(null, controller.onTouchUp(targetIndex = 4, isCancel = true))
+    }
+
+    @Test
+    fun navBarScrollMath_shrinksOnDownScrollAndExpandsOnUpScroll() {
+        assertEquals(0.94f, LibraryView.NavBarScrollMath.COMPACT_SCALE, 0.0001f)
+
+        // Down scroll past threshold compacts navbar
+        assertTrue(LibraryView.NavBarScrollMath.resolveCompactState(currentlyCompact = false, dy = 24))
+        // Small jitter preserves current compact state
+        assertTrue(LibraryView.NavBarScrollMath.resolveCompactState(currentlyCompact = true, dy = -4))
+        assertFalse(LibraryView.NavBarScrollMath.resolveCompactState(currentlyCompact = false, dy = 6))
+        // Up scroll past threshold restores full navbar
+        assertFalse(LibraryView.NavBarScrollMath.resolveCompactState(currentlyCompact = true, dy = -24))
     }
 }

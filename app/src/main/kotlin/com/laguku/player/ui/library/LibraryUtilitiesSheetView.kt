@@ -6,6 +6,7 @@ import android.content.res.ColorStateList
 import android.graphics.Typeface
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.View
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -53,6 +54,7 @@ class LibraryUtilitiesSheetView(
     private val sheetCard = LinearLayout(context)
     private val sheetGlass = LiquidGlassDrawable(context, 24f)
     private val bodyContainer = LinearLayout(context)
+    private var insightsActionBtn: TextView? = null
 
     init {
         setBackgroundColor(0x9904060A.toInt())
@@ -61,6 +63,8 @@ class LibraryUtilitiesSheetView(
         buildUi()
         applyPalette(palette)
     }
+
+    fun getInsightsAnchorView(): View? = insightsActionBtn
 
     fun applyBottomInset(bottomPx: Int) {
         sheetCard.setPadding(dp(16), dp(16), dp(16), dp(16) + bottomPx)
@@ -79,7 +83,7 @@ class LibraryUtilitiesSheetView(
     ) {
         bodyContainer.removeAllViews()
 
-        addActionButton("Statistik Dengar Offline (Insights)") {
+        insightsActionBtn = addActionButton("Statistik Dengar Offline (Insights)") {
             onDismiss()
             callbacks?.onOpenInsights()
         }
@@ -231,11 +235,12 @@ class LibraryUtilitiesSheetView(
         })
     }
 
-    private fun addActionButton(label: String, onClick: () -> Unit) {
+    private fun addActionButton(label: String, onClick: () -> Unit): TextView {
         val btn = createCompactBtn(label, onClick)
         bodyContainer.addView(btn, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, dp(48)).apply {
             bottomMargin = dp(8)
         })
+        return btn
     }
 
     private fun createCompactBtn(label: String, onClick: () -> Unit): TextView {

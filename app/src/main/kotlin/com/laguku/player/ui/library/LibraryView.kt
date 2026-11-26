@@ -80,6 +80,21 @@ class LibraryView(
 
     enum class Tab { SONGS, FOLDERS, ALBUMS, ARTISTS, PLAYLISTS }
 
+    object NavBarScrollMath {
+        const val COMPACT_SCALE = 0.94f
+        const val SCROLL_THRESHOLD_PX = 16
+
+        fun resolveCompactState(
+            currentlyCompact: Boolean,
+            dy: Int,
+            thresholdPx: Int = SCROLL_THRESHOLD_PX
+        ): Boolean {
+            if (dy > thresholdPx) return true
+            if (dy < -thresholdPx) return false
+            return currentlyCompact
+        }
+    }
+
     private sealed class ListEntry {
         data class TrackEntry(val track: Track, val queue: List<Track>, val indexInQueue: Int) : ListEntry()
         data class FolderEntry(val node: FolderNode) : ListEntry()
@@ -165,11 +180,27 @@ class LibraryView(
     // Bottom 5-tab interactive glass scrub bar
     private val bottomScrubBar = InteractiveGlassScrubView(context, 24f)
     private val tabViews = ArrayList<TabItemView>(5)
+    private var isNavBarCompact: Boolean = false
 
     init {
         buildUi()
         applyPalette(palette)
         selectTab(Tab.SONGS)
+    }
+
+    fun getUtilitiesAnchorView(): View = utilitiesPill
+
+    fun setHostActive(active: Boolean) {
+        if (!active) {
+            bottomScrubBar.cancelActiveInteractions()
+            SpringAnimatorHelper.cancelSpring(bottomScrubBar, CHANNEL_NAV_COMPACT)
+        }
+    }
+
+    override fun onDetachedFromWindow() {
+        bottomScrubBar.cancelActiveInteractions()
+        SpringAnimatorHelper.cancelSpring(bottomScrubBar, CHANNEL_NAV_COMPACT)
+        super.onDetachedFromWindow()
     }
 
     fun applySystemInsets(topPx: Int, bottomPx: Int) {
@@ -302,6 +333,14 @@ class LibraryView(
             itemAnimator = null
             clipToPadding = false
             setPadding(0, dp(4), 0, dp(8))
+            addOnScrollListener(object : RecyclerView.OnScrollListener() {
+                override fun onScrolled(rv: RecyclerView, dx: Int, dy: Int) {
+                    val nextCompact = NavBarScrollMath.resolveCompactState(isNavBarCompact, dy)
+                    if (nextCompact != isNavBarCompact) {
+                        setNavBarCompact(nextCompact)
+                    }
+                }
+            })
         }
         ItemTouchHelper(object : ItemTouchHelper.SimpleCallback(0, ItemTouchHelper.RIGHT) {
             override fun getSwipeDirs(rv: RecyclerView, vh: RecyclerView.ViewHolder): Int {
@@ -671,16 +710,45 @@ class LibraryView(
         }
         bottomScrubBar.setSlots(tabViews)
         bottomScrubBar.onSlotPreviewChanged = { idx ->
-            val tab = tabViews.getOrNull(idx)?.tab
-            if (tab != null && tab != activeTab) {
-                selectTab(tab, updateScrub = false)
+            for (i in 0 until tabViews.size) {
+                tabViews[i].setSelectedState(i == idx, palette)
             }
         }
         bottomScrubBar.onSlotSelected = { idx ->
             val tab = tabViews.getOrNull(idx)?.tab
             if (tab != null && tab != activeTab) {
                 selectTab(tab, updateScrub = false)
+            } else {
+                for (item in tabViews) {
+                    item.setSelectedState(item.tab == activeTab, palette)
+                }
             }
+        }
+    }
+
+    private fun setNavBarCompact(compact: Boolean) {
+        if (isNavBarCompact == compact) return
+        isNavBarCompact = compact
+        val targetScale = if (compact) NavBarScrollMath.COMPACT_SCALE else 1f
+        val targetAlpha = if (compact) 0.90f else 1f
+        bottomScrubBar.pivotX = bottomScrubBar.width * 0.5f
+        bottomScrubBar.pivotY = bottomScrubBar.height.toFloat()
+        SpringAnimatorHelper.animateSpring(
+            key = bottomScrubBar,
+            start = bottomScrubBar.scaleX,
+            target = targetScale,
+            stiffness = SpringAnimatorHelper.SPRING_LOUPE_GLIDE.stiffness,
+            dampingRatio = SpringAnimatorHelper.SPRING_LOUPE_GLIDE.dampingRatio,
+            channel = CHANNEL_NAV_COMPACT,
+            onUpdate = { s ->
+                bottomScrubBar.scaleX = s
+                bottomScrubBar.scaleY = s
+                val t = ((s - NavBarScrollMath.COMPACT_SCALE) / (1f - NavBarScrollMath.COMPACT_SCALE)).coerceIn(0f, 1f)
+                bottomScrubBar.alpha = 0.90f + (1f - 0.90f) * t
+            }
+        )
+        if (SpringAnimatorHelper.getSpringValue(bottomScrubBar, CHANNEL_NAV_COMPACT) == null) {
+            bottomScrubBar.alpha = targetAlpha
         }
     }
 
@@ -688,6 +756,7 @@ class LibraryView(
         activeTab = tab
         drillDownTitle = null
         drillDownTracks = null
+        setNavBarCompact(false)
         for (item in tabViews) {
             item.setSelectedState(item.tab == tab, palette)
         }
@@ -1287,5 +1356,9 @@ class LibraryView(
             if (scaled !== decoded) decoded.recycle()
             return scaled
         }
+    }
+
+    private companion object {
+        const val CHANNEL_NAV_COMPACT = 30
     }
 }

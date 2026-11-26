@@ -191,6 +191,7 @@ class MainActivity : Activity(), AudioEngine.Listener, LibraryView.Callbacks, Pl
     override fun onStart() {
         super.onStart()
         SpringAnimatorHelper.setHostActive(true)
+        libraryView.setHostActive(true)
         nowPlayingView.setHostActive(true)
         audioEngine?.setUiPositionUpdatesEnabled(true)
         audioEngine?.setVisualizerActive(isNowPlayingVisible && nowPlayingView.isVisualizerDemanded())
@@ -202,6 +203,7 @@ class MainActivity : Activity(), AudioEngine.Listener, LibraryView.Callbacks, Pl
 
     override fun onStop() {
         SpringAnimatorHelper.setHostActive(false)
+        libraryView.setHostActive(false)
         nowPlayingView.setHostActive(false)
         audioEngine?.setVisualizerActive(false)
         audioEngine?.setUiPositionUpdatesEnabled(false)
@@ -703,15 +705,23 @@ class MainActivity : Activity(), AudioEngine.Listener, LibraryView.Callbacks, Pl
         showSheet(audioLabSheet)
     }
 
+    private fun anchorForSheet(sheet: View): View? {
+        return when (sheet) {
+            audioLabSheet -> nowPlayingView.getAudioLabAnchorView()
+            utilitiesSheet -> libraryView.getUtilitiesAnchorView()
+            insightsSheet -> utilitiesSheet.getInsightsAnchorView()
+            tapToSyncSheet -> nowPlayingView.getTapToSyncAnchorView()
+            else -> null
+        }
+    }
+
     private fun showSheet(sheet: View) {
-        val offset = (rootFrame.height * 0.06f).coerceAtLeast(24f)
-        SpringAnimatorHelper.springReveal(sheet, fromTranslationY = offset, fromScale = 0.97f)
+        SpringAnimatorHelper.springMorphReveal(sheet, anchorForSheet(sheet), rootFrame)
     }
 
     private fun hideSheet(sheet: View) {
         if (sheet.visibility != View.VISIBLE) return
-        val offset = (rootFrame.height * 0.06f).coerceAtLeast(24f)
-        SpringAnimatorHelper.springDismiss(sheet, toTranslationY = offset, toScale = 0.97f)
+        SpringAnimatorHelper.springMorphDismiss(sheet, anchorForSheet(sheet), rootFrame)
     }
 
     private fun registerPredictiveBack() {

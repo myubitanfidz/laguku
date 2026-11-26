@@ -421,11 +421,20 @@ class NowPlayingView(
         }
     }
 
+    fun getAudioLabAnchorView(): View = labPill
+
+    fun getTapToSyncAnchorView(): View = when {
+        lyricTunerPanel.visibility == View.VISIBLE -> lyricTunerPanel
+        lyricTunerToggleBtn.visibility == View.VISIBLE -> lyricTunerToggleBtn
+        else -> tapToSyncEmptyBtn
+    }
+
     fun setHostActive(active: Boolean) {
         hostActive = active
         vinylDiscView.setHostActive(active)
         if (!active) {
             mainHandler.removeCallbacks(playDwellRunnable)
+            modeScrubPill.cancelActiveInteractions()
             SpringAnimatorHelper.cancelSpring(playLoupeView)
             playLoupeView.translationX = 0f
             playLoupeView.scaleX = 1f
@@ -1745,15 +1754,18 @@ class NowPlayingView(
         }
         modeScrubPill.setSlots(modeSlotViews)
         modeScrubPill.onSlotPreviewChanged = { idx ->
-            val mode = modeSlotViews.getOrNull(idx)?.mode
-            if (mode != null && mode != displayMode) {
-                setDisplayMode(mode, animate = true, syncScrub = false)
+            for (i in 0 until modeSlotViews.size) {
+                modeSlotViews[i].setSelectedState(i == idx, palette)
             }
         }
         modeScrubPill.onSlotSelected = { idx ->
             val mode = modeSlotViews.getOrNull(idx)?.mode
             if (mode != null && mode != displayMode) {
                 setDisplayMode(mode, animate = true, syncScrub = false)
+            } else {
+                for (slot in modeSlotViews) {
+                    slot.setSelectedState(slot.mode == displayMode, palette)
+                }
             }
         }
         bottomControlDock.addView(

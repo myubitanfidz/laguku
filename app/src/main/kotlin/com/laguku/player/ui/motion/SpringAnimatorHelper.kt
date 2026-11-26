@@ -117,6 +117,8 @@ object SpringAnimatorHelper {
     private var choreographerRunning = false
     private var lastFrameNanos = 0L
     private var hostActive = true
+    private val morphLocA = IntArray(2)
+    private val morphLocB = IntArray(2)
 
     private val frameCallback = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
@@ -372,6 +374,61 @@ object SpringAnimatorHelper {
                 onEnd?.invoke()
             }
         )
+    }
+
+    fun springMorphReveal(
+        view: View,
+        anchorView: View?,
+        rootView: View,
+        onEnd: (() -> Unit)? = null
+    ) {
+        applyMorphPivot(view, anchorView, rootView)
+        springReveal(
+            view = view,
+            fromTranslationY = 24f,
+            fromScale = 0.92f,
+            stiffness = SPRING_MORPH_SHEET.stiffness,
+            dampingRatio = SPRING_MORPH_SHEET.dampingRatio,
+            onEnd = onEnd
+        )
+    }
+
+    fun springMorphDismiss(
+        view: View,
+        anchorView: View?,
+        rootView: View,
+        onEnd: (() -> Unit)? = null
+    ) {
+        applyMorphPivot(view, anchorView, rootView)
+        springDismiss(
+            view = view,
+            toTranslationY = 24f,
+            toScale = 0.92f,
+            stiffness = SPRING_MORPH_SHEET.stiffness,
+            dampingRatio = SPRING_MORPH_SHEET.dampingRatio,
+            onEnd = {
+                view.pivotX = view.width * 0.5f
+                view.pivotY = view.height * 0.5f
+                onEnd?.invoke()
+            }
+        )
+    }
+
+    private fun applyMorphPivot(view: View, anchorView: View?, rootView: View) {
+        val w = if (view.width > 0) view.width else rootView.width
+        val h = if (view.height > 0) view.height else rootView.height
+        if (w <= 0 || h <= 0) return
+        if (anchorView != null && anchorView.width > 0 && anchorView.height > 0) {
+            anchorView.getLocationInWindow(morphLocA)
+            rootView.getLocationInWindow(morphLocB)
+            val px = (morphLocA[0] - morphLocB[0] + anchorView.width * 0.5f).coerceIn(0f, w.toFloat())
+            val py = (morphLocA[1] - morphLocB[1] + anchorView.height * 0.5f).coerceIn(0f, h.toFloat())
+            view.pivotX = px
+            view.pivotY = py
+        } else {
+            view.pivotX = w * 0.5f
+            view.pivotY = h * 0.9f
+        }
     }
 
     /**
