@@ -14,6 +14,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.os.IBinder
+import android.os.SystemClock
 import android.view.View
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -55,6 +56,7 @@ import com.laguku.player.service.MorningAlarmConfig
 import com.laguku.player.service.MultiClickMediaMapper
 import com.laguku.player.service.PlaybackService
 import com.laguku.player.ui.glass.CoverPaletteExtractor
+import com.laguku.player.ui.glass.InteractiveGlassScrubView
 import com.laguku.player.ui.glass.LiquidGlassDrawable
 import com.laguku.player.ui.glass.StackBlur
 import com.laguku.player.ui.library.InsightsSheetView
@@ -116,6 +118,7 @@ class MainActivity : Activity(), AudioEngine.Listener, LibraryView.Callbacks, Pl
     private var pendingShuffleAllFromShortcut: Boolean = false
     private var currentTransparencyLevel: Float = PlaybackStateStore.DEFAULT_GLASS_TRANSPARENCY
     private var currentAccessibilityFlags = LiquidGlassDrawable.AccessibilityFlags()
+    private var lastUiAbLoopJumpElapsedMs: Long = 0L
 
     private var backCallback: OnBackInvokedCallback? = null
 
@@ -307,6 +310,17 @@ class MainActivity : Activity(), AudioEngine.Listener, LibraryView.Callbacks, Pl
     }
 
     override fun onPositionUpdated(positionMs: Long, durationMs: Long) {
+        val eng = audioEngine
+        if (eng != null && eng.isPlaying()) {
+            val (aMs, bMs) = eng.getAbLoop()
+            val nowElapsed = SystemClock.elapsedRealtime()
+            if (InteractiveGlassScrubView.AbLoopAndTempoMath.shouldTriggerLoopJump(positionMs, aMs, bMs) &&
+                nowElapsed - lastUiAbLoopJumpElapsedMs > 280L
+            ) {
+                lastUiAbLoopJumpElapsedMs = nowElapsed
+                eng.seekTo(aMs!!)
+            }
+        }
         nowPlayingView.onPositionUpdated(positionMs, durationMs)
         libraryView.updateMiniPlayerProgress(positionMs, durationMs)
     }
@@ -536,6 +550,30 @@ class MainActivity : Activity(), AudioEngine.Listener, LibraryView.Callbacks, Pl
             onVisualizerDemandChanged = { demanded ->
                 audioEngine?.setVisualizerActive(isNowPlayingVisible && demanded)
             }
+            onSetAbPointA = {
+                val eng = audioEngine
+                if (eng != null) {
+                    eng.setAbLoop(eng.getCurrentPositionMs(), eng.getAbLoop().second)
+                }
+            }
+            onSetAbPointB = {
+                val eng = audioEngine
+                if (eng != null) {
+                    val start = eng.getAbLoop().first ?: 0L
+                    eng.setAbLoop(start, eng.getCurrentPositionMs())
+                }
+            }
+            onClearAbLoop = {
+                audioEngine?.clearAbLoop()
+            }
+            onVocalTempoSelected = { speed ->
+                val eng = audioEngine
+                if (eng != null) {
+                    eng.setVocalTempo(speed)
+                    nowPlayingView.setVocalTempoDisplay(speed)
+                    playbackBinder?.getService()?.saveCurrentRouteProfile()
+                }
+            }
         }
 
         audioLabSheet = AudioLabSheetView(this) {
@@ -545,6 +583,7 @@ class MainActivity : Activity(), AudioEngine.Listener, LibraryView.Callbacks, Pl
             callbacks = object : AudioLabSheetView.Callbacks {
                 override fun onDspConfigChanged(config: AudioDspConfig) {
                     audioEngine?.updateDspConfig(config)
+                    nowPlayingView.setVocalTempoDisplay(config.speed)
                     playbackBinder?.getService()?.saveCurrentRouteProfile()
                 }
 

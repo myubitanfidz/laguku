@@ -126,4 +126,8 @@
     <string name="pin_widget_label">Pasang Widget ke Layar Utama</string>
     <string name="pin_widget_requested">Permintaan widget dikirim ke layar utama</string>
     <string name="pin_widget_unsupported">Buka Layar Utama -&gt; cubit layar -&gt; Widget -&gt; ketuk Semua -&gt; gulir ke bawah ke Widget Android -&gt; pilih Laguku.</string>
+    <string name="ab_point_a_label">Set A</string>
+    <string name="ab_point_b_label">Set B</string>
+    <string name="ab_reset_label">Reset AB</string>
+    <string name="vocal_tempo_fmt">%1$s×</string>
 </resources>

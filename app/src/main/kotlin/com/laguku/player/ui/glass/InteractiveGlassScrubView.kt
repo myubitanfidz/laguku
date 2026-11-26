@@ -3,7 +3,9 @@ package com.laguku.player.ui.glass
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Canvas
+import android.graphics.Paint
 import android.graphics.Rect
+import android.graphics.RectF
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -30,6 +32,61 @@ class InteractiveGlassScrubView(
     context: Context,
     cornerRadiusDp: Float = 24f
 ) : FrameLayout(context) {
+
+    object AbLoopAndTempoMath {
+        const val MIN_AB_LOOP_SPAN_MS = 500L
+        val SUPPORTED_VOCAL_TEMPOS = floatArrayOf(0.75f, 0.90f, 1.00f, 1.10f, 1.25f)
+
+        fun isValidAbSpan(pointAMs: Long?, pointBMs: Long?, durationMs: Long = Long.MAX_VALUE): Boolean {
+            return pointAMs != null &&
+                pointBMs != null &&
+                pointAMs >= 0L &&
+                pointBMs <= durationMs.coerceAtLeast(0L) &&
+                pointBMs > pointAMs + MIN_AB_LOOP_SPAN_MS
+        }
+
+        fun normalizeAbPoints(pointAMs: Long?, pointBMs: Long?, durationMs: Long): Pair<Long?, Long?> {
+            val dur = durationMs.coerceAtLeast(0L)
+            val a = pointAMs?.coerceAtLeast(0L)?.let { if (dur > 0L) it.coerceAtMost(dur) else it }
+            val b = pointBMs?.coerceAtLeast(0L)?.let { if (dur > 0L) it.coerceAtMost(dur) else it }
+            val resolvedB = if (a != null && b != null && b > a + MIN_AB_LOOP_SPAN_MS) b else null
+            return a to resolvedB
+        }
+
+        fun shouldTriggerLoopJump(positionMs: Long, pointAMs: Long?, pointBMs: Long?): Boolean {
+            return pointAMs != null &&
+                pointBMs != null &&
+                pointBMs > pointAMs + MIN_AB_LOOP_SPAN_MS &&
+                positionMs >= pointBMs
+        }
+
+        fun normalizeVocalTempo(requested: Float): Float {
+            if (!requested.isFinite()) return 1.00f
+            var best = SUPPORTED_VOCAL_TEMPOS[2]
+            var bestDiff = Float.MAX_VALUE
+            for (i in SUPPORTED_VOCAL_TEMPOS.indices) {
+                val candidate = SUPPORTED_VOCAL_TEMPOS[i]
+                val diff = abs(requested - candidate)
+                if (diff < bestDiff) {
+                    bestDiff = diff
+                    best = candidate
+                }
+            }
+            return best
+        }
+
+        fun nextVocalTempo(current: Float): Float {
+            val normalized = normalizeVocalTempo(current)
+            val idx = SUPPORTED_VOCAL_TEMPOS.indexOfFirst { abs(it - normalized) < 0.01f }
+            return if (idx < 0) {
+                SUPPORTED_VOCAL_TEMPOS[2]
+            } else {
+                SUPPORTED_VOCAL_TEMPOS[(idx + 1) % SUPPORTED_VOCAL_TEMPOS.size]
+            }
+        }
+
+        fun shouldApplyPlaybackParamsImmediately(isPlaying: Boolean): Boolean = isPlaying
+    }
 
     object ScrubMath {
 
@@ -172,6 +229,19 @@ class InteractiveGlassScrubView(
     private var hasDragged: Boolean = false
     private var neutralLensMode: Boolean = false
 
+    private var abStartFraction: Float = -1f
+    private var abEndFraction: Float = -1f
+    private val abMarkerRect = RectF()
+    private val abSpanRect = RectF()
+    private val abMarkerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = 0xE07CE7FF.toInt()
+    }
+    private val abSpanPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = 0x267CE7FF
+    }
+
     private val dwellRunnable = Runnable {
         val committed = dwellController.onDwellTimeout(SystemClock.elapsedRealtime()) ?: return@Runnable
         if (committed in slotCenters.indices) {
@@ -227,6 +297,24 @@ class InteractiveGlassScrubView(
     fun setPalette(palette: CoverPalette) {
         containerGlass.setPalette(palette)
         indicatorGlass.setPalette(palette)
+        abMarkerPaint.color = (0xE0 shl 24) or (palette.accentGlow and 0x00FFFFFF)
+        abSpanPaint.color = (0x26 shl 24) or (palette.accentGlow and 0x00FFFFFF)
+        invalidate()
+    }
+
+    fun setAbLoopMarkers(pointAMs: Long?, pointBMs: Long?, durationMs: Long) {
+        if (durationMs <= 0L || pointAMs == null) {
+            abStartFraction = -1f
+            abEndFraction = -1f
+            invalidate()
+            return
+        }
+        abStartFraction = (pointAMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
+        abEndFraction = if (pointBMs != null && pointBMs > pointAMs + AbLoopAndTempoMath.MIN_AB_LOOP_SPAN_MS) {
+            (pointBMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
+        } else {
+            -1f
+        }
         invalidate()
     }
 
@@ -297,6 +385,23 @@ class InteractiveGlassScrubView(
             )
             indicatorGlass.bounds = indicatorBounds
             indicatorGlass.draw(canvas)
+        }
+        if (abStartFraction >= 0f && width > horizontalPaddingPx * 2 && height > verticalPaddingPx * 2) {
+            val trackLeft = horizontalPaddingPx.toFloat()
+            val trackWidth = (width - horizontalPaddingPx * 2).toFloat()
+            val markerHalfW = 1.5f * density
+            val topY = verticalPaddingPx.toFloat() + 2f * density
+            val bottomY = (height - verticalPaddingPx).toFloat() - 2f * density
+            val ax = trackLeft + trackWidth * abStartFraction
+            if (abEndFraction > abStartFraction) {
+                val bx = trackLeft + trackWidth * abEndFraction
+                abSpanRect.set(ax, topY, bx, bottomY)
+                canvas.drawRoundRect(abSpanRect, markerHalfW, markerHalfW, abSpanPaint)
+                abMarkerRect.set(bx - markerHalfW, topY, bx + markerHalfW, bottomY)
+                canvas.drawRoundRect(abMarkerRect, markerHalfW, markerHalfW, abMarkerPaint)
+            }
+            abMarkerRect.set(ax - markerHalfW, topY, ax + markerHalfW, bottomY)
+            canvas.drawRoundRect(abMarkerRect, markerHalfW, markerHalfW, abMarkerPaint)
         }
         super.dispatchDraw(canvas)
     }

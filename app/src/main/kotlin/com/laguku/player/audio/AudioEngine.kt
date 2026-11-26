@@ -23,6 +23,7 @@ import com.laguku.player.model.AudioQualityInfo
 import com.laguku.player.model.LosslessAuditStatus
 import com.laguku.player.model.RepeatMode
 import com.laguku.player.model.Track
+import com.laguku.player.ui.glass.InteractiveGlassScrubView
 import java.util.ArrayDeque
 import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.atomic.AtomicBoolean
@@ -693,12 +694,19 @@ class AudioEngine(private val context: Context) {
         applyPlaybackParamsInternal(s, p)
     }
 
+    fun setVocalTempo(speed: Float) {
+        val normalized = InteractiveGlassScrubView.AbLoopAndTempoMath.normalizeVocalTempo(speed)
+        setSpeedAndPitch(speed = normalized, pitch = 1.0f)
+    }
+
     fun setAbLoop(startMs: Long?, endMs: Long?) {
-        val dur = currentDurationMs
-        val a = startMs?.coerceAtLeast(0L)?.let { if (dur > 0L) it.coerceAtMost(dur) else it }
-        val b = endMs?.coerceAtLeast(0L)?.let { if (dur > 0L) it.coerceAtMost(dur) else it }
+        val (a, b) = InteractiveGlassScrubView.AbLoopAndTempoMath.normalizeAbPoints(
+            pointAMs = startMs,
+            pointBMs = endMs,
+            durationMs = currentDurationMs
+        )
         abLoopStartMs = a
-        abLoopEndMs = if (a != null && b != null && b > a + 200L) b else null
+        abLoopEndMs = b
         notifyAbLoopChanged(abLoopStartMs, abLoopEndMs)
     }
 
@@ -952,10 +960,12 @@ class AudioEngine(private val context: Context) {
             // Check AB-Loop wrap
             val aMs = abLoopStartMs
             val bMs = abLoopEndMs
-            if (aMs != null && bMs != null && bMs > aMs + 200L) {
+            if (aMs != null && bMs != null) {
                 updatePositionSnapshot()
                 val nowElapsed = SystemClock.elapsedRealtime()
-                if (currentPositionMs >= bMs && nowElapsed - lastAbLoopSeekElapsedMs > 250L) {
+                if (InteractiveGlassScrubView.AbLoopAndTempoMath.shouldTriggerLoopJump(currentPositionMs, aMs, bMs) &&
+                    nowElapsed - lastAbLoopSeekElapsedMs > 250L
+                ) {
                     lastAbLoopSeekElapsedMs = nowElapsed
                     performSeek(aMs)
                     currentPositionMs = aMs
@@ -1002,10 +1012,12 @@ class AudioEngine(private val context: Context) {
                     if (fallbackPrepared) {
                         runCatching { fallbackPlayer?.start() }
                         applyActiveVolume()
+                        applyPlaybackParamsInternal(dspConfig.speed, dspConfig.pitch)
                     }
                 } else {
                     runCatching { audioTrack?.play() }
                     applyActiveVolume()
+                    applyPlaybackParamsInternal(dspConfig.speed, dspConfig.pitch)
                 }
             }
             is EngineCommand.Pause -> {
@@ -1577,10 +1589,10 @@ class AudioEngine(private val context: Context) {
             updateTrackState(track, track.quality, durMs)
             syncFallbackSystemEq()
             applyActiveVolume()
-            applyPlaybackParamsInternal(dspConfig.speed, dspConfig.pitch)
             if (startPlaying && playing) {
                 acquireWakeLockWithTimeout()
                 mp.start()
+                applyPlaybackParamsInternal(dspConfig.speed, dspConfig.pitch)
             }
         } catch (_: Exception) {
             releaseWakeLock()
@@ -1601,6 +1613,7 @@ class AudioEngine(private val context: Context) {
     }
 
     private fun applyPlaybackParamsInternal(speed: Float, pitch: Float) {
+        if (!InteractiveGlassScrubView.AbLoopAndTempoMath.shouldApplyPlaybackParamsImmediately(playing)) return
         val s = speed.coerceIn(0.5f, 2.0f)
         val p = pitch.coerceIn(0.5f, 2.0f)
         if (usingFallback) {

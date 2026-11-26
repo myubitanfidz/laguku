@@ -583,6 +583,10 @@ class NowPlayingView(
     var onOpenTapToSync: ((Track, String?) -> Unit)? = null
     var onShareLyricQuote: ((Track, List<LyricLine>) -> Unit)? = null
     var onVisualizerDemandChanged: ((Boolean) -> Unit)? = null
+    var onSetAbPointA: (() -> Unit)? = null
+    var onSetAbPointB: (() -> Unit)? = null
+    var onClearAbLoop: (() -> Unit)? = null
+    var onVocalTempoSelected: ((Float) -> Unit)? = null
 
     private val density = resources.displayMetrics.density
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
@@ -598,6 +602,10 @@ class NowPlayingView(
     private var manualScrollPaused: Boolean = false
     private val manualScrollController = ManualScrollPauseController()
     private var sleepTimerEndElapsedMs: Long = 0L
+    private var currentAbStartMs: Long? = null
+    private var currentAbEndMs: Long? = null
+    private var currentDurationKnownMs: Long = 0L
+    private var currentVocalTempo: Float = 1.00f
 
     private var userLyricOffsetMs: Long = 0L
     private var btLyricOffsetMs: Long = 0L
@@ -713,8 +721,17 @@ class NowPlayingView(
     private val dockIconGlassFav = LiquidGlassDrawable(context, 16f)
     private val dockIconGlassQueue = LiquidGlassDrawable(context, 16f)
 
-    // Dock Row 2: WaveformPillSeekBarView
+    // Dock Row 2: WaveformPillSeekBarView + Compact A-B Loop & Vocal Tempo Strip
     private val seekWaveformView = WaveformPillSeekBarView(context)
+    private val abTempoRow = LinearLayout(context)
+    private val abSetABtn = TextView(context)
+    private val abSetBBtn = TextView(context)
+    private val abResetBtn = TextView(context)
+    private val vocalTempoBtn = TextView(context)
+    private val abSetABg = GradientDrawable()
+    private val abSetBBg = GradientDrawable()
+    private val abResetBg = GradientDrawable()
+    private val vocalTempoBg = GradientDrawable()
 
     // Dock Row 3: 5 Transport Controls + Detached Play Glass Loupe
     private val transportHost = FrameLayout(context)
@@ -814,6 +831,7 @@ class NowPlayingView(
             onQualityChanged(engine.getCurrentQuality())
             setLosslessAuditStatus(engine.getLosslessAuditStatus())
             setAbLoop(engine.getAbLoop().first, engine.getAbLoop().second)
+            setVocalTempoDisplay(engine.getDspConfig().speed)
             onPlaybackStateChanged(engine.isPlaying())
             onPositionUpdated(engine.getCurrentPositionMs(), engine.getDurationMs())
             updateShuffleAndRepeatState()
@@ -924,7 +942,16 @@ class NowPlayingView(
     }
 
     fun setAbLoop(startMs: Long?, endMs: Long?) {
+        currentAbStartMs = startMs
+        currentAbEndMs = endMs
         seekWaveformView.setAbLoop(startMs, endMs)
+        modeScrubPill.setAbLoopMarkers(startMs, endMs, currentDurationKnownMs)
+        updateAbAndTempoUi()
+    }
+
+    fun setVocalTempoDisplay(speed: Float) {
+        currentVocalTempo = InteractiveGlassScrubView.AbLoopAndTempoMath.normalizeVocalTempo(speed)
+        updateAbAndTempoUi()
     }
 
     fun setLyricOffsets(userOffsetMs: Long, btOffsetMs: Long) {
@@ -1144,6 +1171,11 @@ class NowPlayingView(
             seekWaveformView.setChapters(emptyList())
             seekWaveformView.setWaveform(null)
             seekWaveformView.setAbLoop(null, null)
+            currentDurationKnownMs = 0L
+            currentAbStartMs = null
+            currentAbEndMs = null
+            modeScrubPill.setAbLoopMarkers(null, null, 0L)
+            updateAbAndTempoUi()
             setCoverArtwork(null)
             setLyrics(ParsedLyrics(emptyList(), isSynced = false))
             updateFavoriteButton(null)
@@ -1165,6 +1197,8 @@ class NowPlayingView(
         miniTrackArtistView.text = artistStr
         seekWaveformView.setChapters(track.chapters)
         seekWaveformView.setTrackKey(track.contentUri.ifBlank { track.path })
+        currentDurationKnownMs = track.durationMs
+        modeScrubPill.setAbLoopMarkers(currentAbStartMs, currentAbEndMs, currentDurationKnownMs)
         onQualityChanged(track.quality)
         updateFavoriteButton(track)
         updateShuffleAndRepeatState()
@@ -1233,6 +1267,10 @@ class NowPlayingView(
     }
 
     fun onPositionUpdated(positionMs: Long, durationMs: Long) {
+        if (durationMs > 0L && durationMs != currentDurationKnownMs) {
+            currentDurationKnownMs = durationMs
+            modeScrubPill.setAbLoopMarkers(currentAbStartMs, currentAbEndMs, durationMs)
+        }
         seekWaveformView.setPosition(positionMs, durationMs)
         updateActiveLyricForPosition(positionMs, forceScroll = false)
         val effectivePosMs = (positionMs + userLyricOffsetMs + btLyricOffsetMs).coerceAtLeast(0L)
@@ -2175,9 +2213,48 @@ class NowPlayingView(
         bottomControlDock.addView(
             seekWaveformView,
             LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply {
-                bottomMargin = dp(10)
+                bottomMargin = dp(6)
             }
         )
+
+        abTempoRow.apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+        }
+        configureAbTempoChip(abSetABtn, abSetABg, context.getString(R.string.ab_point_a_label)) {
+            performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+            onSetAbPointA?.invoke()
+        }
+        configureAbTempoChip(abSetBBtn, abSetBBg, context.getString(R.string.ab_point_b_label)) {
+            performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+            onSetAbPointB?.invoke()
+        }
+        configureAbTempoChip(abResetBtn, abResetBg, context.getString(R.string.ab_reset_label)) {
+            performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+            onClearAbLoop?.invoke()
+        }
+        configureAbTempoChip(
+            vocalTempoBtn,
+            vocalTempoBg,
+            context.getString(R.string.vocal_tempo_fmt, String.format(java.util.Locale.US, "%.2f", currentVocalTempo))
+        ) {
+            performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+            val next = InteractiveGlassScrubView.AbLoopAndTempoMath.nextVocalTempo(currentVocalTempo)
+            currentVocalTempo = next
+            updateAbAndTempoUi()
+            onVocalTempoSelected?.invoke(next)
+        }
+        abTempoRow.addView(abSetABtn, LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginEnd = dp(6) })
+        abTempoRow.addView(abSetBBtn, LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginEnd = dp(6) })
+        abTempoRow.addView(abResetBtn, LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginEnd = dp(6) })
+        abTempoRow.addView(vocalTempoBtn, LinearLayout.LayoutParams(0, dp(48), 1f))
+        bottomControlDock.addView(
+            abTempoRow,
+            LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply {
+                bottomMargin = dp(8)
+            }
+        )
+        updateAbAndTempoUi()
 
         // Dock 3: Main Transport Controls (>= 48dp touch targets) with detached sliding Play glass loupe
         transportHost.apply {
@@ -2507,6 +2584,60 @@ class NowPlayingView(
         }
         container.addView(iconView, LinearLayout.LayoutParams(dp(16), dp(16)))
         container.addView(textView, LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT))
+    }
+
+    private fun configureAbTempoChip(
+        button: TextView,
+        bgDrawable: GradientDrawable,
+        label: String,
+        onClick: () -> Unit
+    ) {
+        bgDrawable.cornerRadius = 14f * density
+        bgDrawable.setColor(LiquidGlassDrawable.LayerTokens.nestedCardColor(isDarkMode = true))
+        button.apply {
+            text = label
+            setTextColor(0xE6FFFFFF.toInt())
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            gravity = Gravity.CENTER
+            minimumHeight = dp(48)
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+            background = bgDrawable
+            setPadding(dp(6), dp(6), dp(6), dp(6))
+            SpringAnimatorHelper.attachPressFeedback(this)
+            setOnClickListener { onClick() }
+        }
+    }
+
+    private fun updateAbAndTempoUi() {
+        val accentTint = (0x3D shl 24) or (palette.accentGlow and 0x00FFFFFF)
+        val idleTint = LiquidGlassDrawable.LayerTokens.nestedCardColor(isDarkMode = true)
+        val hasA = currentAbStartMs != null
+        val hasB = InteractiveGlassScrubView.AbLoopAndTempoMath.isValidAbSpan(
+            currentAbStartMs,
+            currentAbEndMs,
+            currentDurationKnownMs.coerceAtLeast(Long.MAX_VALUE / 2)
+        )
+        val tempoCustom = kotlin.math.abs(currentVocalTempo - 1.00f) > 0.01f
+
+        abSetABg.setColor(if (hasA) accentTint else idleTint)
+        abSetABtn.setTextColor(if (hasA) palette.accentGlow else 0xE6FFFFFF.toInt())
+
+        abSetBBg.setColor(if (hasB) accentTint else idleTint)
+        abSetBBtn.setTextColor(if (hasB) palette.accentGlow else 0xE6FFFFFF.toInt())
+
+        val hasAnyAb = hasA || currentAbEndMs != null
+        abResetBg.setColor(idleTint)
+        abResetBtn.setTextColor(if (hasAnyAb) 0xFFFFFFFF.toInt() else 0x70FFFFFF.toInt())
+        abResetBtn.isEnabled = hasAnyAb
+
+        vocalTempoBg.setColor(if (tempoCustom) accentTint else idleTint)
+        vocalTempoBtn.text = context.getString(
+            R.string.vocal_tempo_fmt,
+            String.format(java.util.Locale.US, "%.2f", currentVocalTempo)
+        )
+        vocalTempoBtn.setTextColor(if (tempoCustom) palette.accentGlow else 0xE6FFFFFF.toInt())
     }
 
     private fun buildModalOverlay() {
@@ -2942,6 +3073,7 @@ class NowPlayingView(
         updateFavoriteButton(audioEngine?.getCurrentTrack())
         updateShuffleAndRepeatState()
         updateSecondaryPillStates()
+        updateAbAndTempoUi()
     }
 
     private fun revealModal() {

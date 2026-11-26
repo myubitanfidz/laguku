@@ -4,6 +4,7 @@ import com.laguku.player.audio.AudioDspChain
 import com.laguku.player.audio.AudioEngine
 import com.laguku.player.audio.LosslessCutoffAuditor
 import com.laguku.player.model.LosslessAuditStatus
+import com.laguku.player.ui.glass.InteractiveGlassScrubView
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -252,5 +253,39 @@ class AudioDspAndFadeTest {
         assertEquals(1, releaseCount)
         lease.releaseNow()
         assertEquals(1, releaseCount)
+    }
+
+    @Test
+    fun abLoopAndVocalTempoMath_enforces500msSpanLoopJumpAndPauseSafety() {
+        val math = InteractiveGlassScrubView.AbLoopAndTempoMath
+        assertEquals(500L, math.MIN_AB_LOOP_SPAN_MS)
+        assertEquals(listOf(0.75f, 0.90f, 1.00f, 1.10f, 1.25f), math.SUPPORTED_VOCAL_TEMPOS.toList())
+
+        val equalBoundary = math.normalizeAbPoints(1_000L, 1_500L, 10_000L)
+        assertEquals(1_000L, equalBoundary.first)
+        assertEquals(null, equalBoundary.second)
+
+        val validSpan = math.normalizeAbPoints(1_000L, 1_501L, 10_000L)
+        assertEquals(1_000L, validSpan.first)
+        assertEquals(1_501L, validSpan.second)
+        assertTrue(math.isValidAbSpan(validSpan.first, validSpan.second, 10_000L))
+
+        assertFalse(math.shouldTriggerLoopJump(1_500L, 1_000L, 1_501L))
+        assertTrue(math.shouldTriggerLoopJump(1_501L, 1_000L, 1_501L))
+        assertTrue(math.shouldTriggerLoopJump(1_750L, 1_000L, 1_501L))
+        assertFalse(math.shouldTriggerLoopJump(2_000L, 1_000L, 1_300L))
+
+        assertEquals(1.00f, math.normalizeVocalTempo(1.02f), 0.0001f)
+        assertEquals(0.75f, math.normalizeVocalTempo(0.50f), 0.0001f)
+        assertEquals(1.25f, math.normalizeVocalTempo(1.80f), 0.0001f)
+
+        assertEquals(1.10f, math.nextVocalTempo(1.00f), 0.0001f)
+        assertEquals(1.25f, math.nextVocalTempo(1.10f), 0.0001f)
+        assertEquals(0.75f, math.nextVocalTempo(1.25f), 0.0001f)
+        assertEquals(0.90f, math.nextVocalTempo(0.75f), 0.0001f)
+        assertEquals(1.00f, math.nextVocalTempo(0.90f), 0.0001f)
+
+        assertFalse(math.shouldApplyPlaybackParamsImmediately(isPlaying = false))
+        assertTrue(math.shouldApplyPlaybackParamsImmediately(isPlaying = true))
     }
 }
