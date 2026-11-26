@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Laguku</string>
+
+    <!-- Tabs -->
+    <string name="tab_songs">Lagu</string>
+    <string name="tab_folders">Folder</string>
+    <string name="tab_albums">Album</string>
+    <string name="tab_artists">Artis</string>
+    <string name="tab_playlists">Playlist</string>
+
+    <!-- Now Playing -->
+    <string name="mode_full_cover">Sampul Penuh</string>
+    <string name="mode_lyrics_focus">Fokus Lirik</string>
+    <string name="mode_cover_short">Sampul</string>
+    <string name="mode_lyrics_short">Lirik</string>
+    <string name="return_to_active_lyric">Kembali ke lirik aktif</string>
+    <string name="no_lyrics_available">Tidak ada lirik untuk lagu ini</string>
+    <string name="unknown_title">Judul Tidak Diketahui</string>
+    <string name="unknown_artist">Artis Tidak Diketahui</string>
+    <string name="unknown_album">Album Tidak Diketahui</string>
+
+    <!-- Controls & Accessibility -->
+    <string name="cd_back">Kembali</string>
+    <string name="cd_play_pause">Putar atau Jeda</string>
+    <string name="cd_previous">Sebelumnya</string>
+    <string name="cd_next">Berikutnya</string>
+    <string name="cd_shuffle">Acak</string>
+    <string name="cd_repeat">Ulangi</string>
+    <string name="cd_equalizer">Equalizer</string>
+    <string name="cd_sleep_timer">Timer Tidur</string>
+    <string name="cd_search">Cari musik</string>
+    <string name="cd_favorite">Favorit</string>
+    <string name="cd_queue">Antrean</string>
+
+    <!-- Secondary Dock & Modals -->
+    <string name="eq_short">Equalizer</string>
+    <string name="timer_short">Timer</string>
+    <string name="eq_title">Equalizer 5-Band</string>
+    <string name="eq_enabled">Aktif</string>
+    <string name="eq_disabled">Nonaktif</string>
+    <string name="eq_reset">Atur Ulang</string>
+    <string name="eq_close">Tutup</string>
+
+    <string name="queue_title">Antrean Putar</string>
+    <string name="queue_empty">Antrean putar kosong</string>
+
+    <!-- Sleep Timer -->
+    <string name="timer_title">Timer Tidur</string>
+    <string name="timer_off">Nonaktif</string>
+    <string name="timer_15_min">15 menit</string>
+    <string name="timer_30_min">30 menit</string>
+    <string name="timer_45_min">45 menit</string>
+    <string name="timer_60_min">60 menit</string>
+    <string name="timer_active_fmt">Aktif: %1$d menit tersisa</string>
+
+    <!-- Library & Playlists -->
+    <string name="shuffle_all">Putar Acak Semua</string>
+    <string name="search_label">Cari</string>
+    <string name="search_hint">Cari lagu, artis, atau album…</string>
+    <string name="empty_library">Belum ada musik ditemukan</string>
+    <string name="permission_title">Izin Akses Musik</string>
+    <string name="permission_message">Laguku membutuhkan izin penyimpanan audio untuk memindai dan memutar koleksi musik lokal Anda.</string>
+    <string name="permission_grant">Izinkan Akses</string>
+    <string name="playlist_import">Impor .m3u8</string>
+    <string name="playlist_export">Ekspor .m3u8</string>
+    <string name="playlist_create">Buat Playlist</string>
+    <string name="playlist_empty">Belum ada playlist .m3u8</string>
+    <string name="back_to_list">Kembali</string>
+    <string name="songs_count_fmt">%1$d lagu</string>
+
+    <!-- Home Screen Pill Widget -->
+    <string name="widget_pill_description">Pemutar musik kapsul Liquid Glass yang dapat diubah ukurannya untuk layar beranda.</string>
+    <string name="widget_idle_title">Laguku</string>
+    <string name="widget_idle_subtitle">Ketuk untuk memutar musik</string>
+    <string name="qs_playing">Memutar</string>
+    <string name="qs_paused">Dijeda</string>
+
+    <!-- App Shortcuts -->
+    <string name="shortcut_shuffle_short">Putar Acak</string>
+    <string name="shortcut_shuffle_long">Putar Acak Semua Lagu</string>
+    <string name="shortcut_amoled_short">Mode AMOLED</string>
+    <string name="shortcut_amoled_long">Aktifkan Mode Malam AMOLED</string>
+
+    <!-- Wave 3 Seamless UI & Bottom Sheets -->
+    <string name="mode_disc_short">Disk</string>
+    <string name="audio_lab_short">Audio Lab</string>
+    <string name="amoled_short">AMOLED</string>
+    <string name="utilities_short">Utilitas</string>
+    <string name="lyric_offset_save">Simpan</string>
+    <string name="cd_lyric_tuner">Atur Sinkron &amp; Posisi Lirik</string>
+    <string name="lyric_anchor_top">Atas 28%</string>
+    <string name="lyric_anchor_optimal">Optimal 36%</string>
+    <string name="lyric_anchor_center">Tengah 48%</string>
+    <string name="share_card_fmt">Bagikan (%1$d)</string>
+    <string name="cancel_label">Batal</string>
+    <string name="audio_lab_title">Audio Lab</string>
+    <string name="tab_eq_10">EQ 10-Band</string>
+    <string name="tab_acoustics_bt">Akustik &amp; BT</string>
+    <string name="tab_tempo_loop">Tempo &amp; Loop</string>
+    <string name="insights_title">Statistik Dengar</string>
+    <string name="utilities_title">Koleksi &amp; Utilitas</string>
+
+    <!-- Online Lyrics & Offline Tap-to-Sync -->
+    <string name="lyrics_search_online">Cari Lirik</string>
+    <string name="lyrics_create_offline">Buat Lirik</string>
+    <string name="lyrics_replace_online">Cari Ulang</string>
+    <string name="lyrics_resync_offline">Sinkronkan Ulang</string>
+    <string name="lyrics_searching">Mencari lirik…</string>
+    <string name="lyrics_not_found">Lirik tidak ditemukan</string>
+    <string name="lyrics_offline_error">Tidak ada koneksi / gagal memuat</string>
+    <string name="lyrics_plain_found_hint">Lirik statis ditemukan; ketuk Sinkronkan Ulang untuk memberi waktu</string>
+    <string name="lyrics_saved_lrc">Lirik .lrc tersimpan offline</string>
+    <string name="tap_sync_title">Buat Lirik Tap-to-Sync</string>
+    <string name="tap_sync_paste_hint">Tempel teks lirik di sini (satu baris per bait)…</string>
+    <string name="tap_sync_start">Mulai Sinkronkan</string>
+    <string name="tap_sync_stamp_btn">Tandai Baris Berikutnya</string>
+    <string name="tap_sync_undo">Undo</string>
+    <string name="tap_sync_edit_raw">Ubah Teks</string>
+    <string name="tap_sync_save_lrc">Simpan .lrc</string>
+    <string name="tap_sync_progress_fmt">Baris %1$d / %2$d</string>
+    <string name="tap_sync_done_preview">Semua baris selesai ditandai</string>
+</resources>

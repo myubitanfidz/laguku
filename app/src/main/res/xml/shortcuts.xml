@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="shuffle_all"
+        android:enabled="true"
+        android:icon="@drawable/ic_shuffle"
+        android:shortcutShortLabel="@string/shortcut_shuffle_short"
+        android:shortcutLongLabel="@string/shortcut_shuffle_long">
+        <intent
+            android:action="com.laguku.player.action.SHORTCUT_SHUFFLE_ALL"
+            android:targetPackage="com.laguku.player"
+            android:targetClass="com.laguku.player.MainActivity" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="amoled_night"
+        android:enabled="true"
+        android:icon="@drawable/ic_night"
+        android:shortcutShortLabel="@string/shortcut_amoled_short"
+        android:shortcutLongLabel="@string/shortcut_amoled_long">
+        <intent
+            android:action="com.laguku.player.action.SHORTCUT_AMOLED_NIGHT"
+            android:targetPackage="com.laguku.player"
+            android:targetClass="com.laguku.player.MainActivity" />
+    </shortcut>
+</shortcuts>

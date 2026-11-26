@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="240dp"
+    android:height="240dp"
+    android:viewportWidth="240"
+    android:viewportHeight="240">
+
+    <!-- Obsidian Base -->
+    <path android:pathData="M0,0h240v240h-240z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="0"
+                android:startY="0"
+                android:endX="240"
+                android:endY="240"
+                android:type="linear">
+                <item android:offset="0" android:color="#FF0B0D12" />
+                <item android:offset="1" android:color="#FF141923" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Subtle Indigo Top-Left Glow -->
+    <path android:pathData="M0,0h240v240h-240z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:centerX="48"
+                android:centerY="48"
+                android:gradientRadius="160"
+                android:type="radial">
+                <item android:offset="0" android:color="#552C4D8F" />
+                <item android:offset="1" android:color="#002C4D8F" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Subtle Amber Bottom-Right Glow -->
+    <path android:pathData="M0,0h240v240h-240z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:centerX="192"
+                android:centerY="192"
+                android:gradientRadius="150"
+                android:type="radial">
+                <item android:offset="0" android:color="#4DB87438" />
+                <item android:offset="1" android:color="#00B87438" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Vinyl Platter -->
+    <path
+        android:fillColor="#FF11141B"
+        android:pathData="M120,34a86,86 0 1,0 0,172a86,86 0 1,0 0,-172z" />
+
+    <!-- Concentric Vinyl Grooves -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#1BFFFFFF"
+        android:strokeWidth="1.0"
+        android:pathData="M120,44a76,76 0 1,0 0,152a76,76 0 1,0 0,-152z" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#12FFFFFF"
+        android:strokeWidth="1.0"
+        android:pathData="M120,54a66,66 0 1,0 0,132a66,66 0 1,0 0,-132z" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#1BFFFFFF"
+        android:strokeWidth="1.0"
+        android:pathData="M120,64a56,56 0 1,0 0,112a56,56 0 1,0 0,-112z" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#12FFFFFF"
+        android:strokeWidth="1.0"
+        android:pathData="M120,74a46,46 0 1,0 0,92a46,46 0 1,0 0,-92z" />
+
+    <!-- Diagonal Glass Sheen -->
+    <path
+        android:fillColor="#1CFFFFFF"
+        android:pathData="M120,120 L45.5,77.0 A86,86 0 0,1 97.7,37.0 Z" />
+    <path
+        android:fillColor="#12FFFFFF"
+        android:pathData="M120,120 L194.5,163.0 A86,86 0 0,1 142.3,203.0 Z" />
+
+    <!-- Outer Glass Rim -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#42FFFFFF"
+        android:strokeWidth="1.8"
+        android:pathData="M120,34a86,86 0 1,0 0,172a86,86 0 1,0 0,-172z" />
+
+    <!-- Center Label Glass Circle -->
+    <path
+        android:fillColor="#381A2230"
+        android:strokeColor="#3AFFFFFF"
+        android:strokeWidth="1.2"
+        android:pathData="M120,84a36,36 0 1,0 0,72a36,36 0 1,0 0,-72z" />
+
+    <!-- Center Monogram 'l' + 3-Peak Soundwave -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="6.0"
+        android:pathData="M96,95 C96,113 96,131 102.5,136 C106.5,139 110,134.5 113,123 L118,105 L124,134 L130,98 L136,130 L141,116 C143,111 145,115 147,119">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:startX="95"
+                android:startY="95"
+                android:endX="148"
+                android:endY="138"
+                android:type="linear">
+                <item android:offset="0" android:color="#FFE4F9FF" />
+                <item android:offset="0.55" android:color="#FFFFFFFF" />
+                <item android:offset="1" android:color="#FFF2B872" />
+            </gradient>
+        </aapt:attr>
+    </path>
+</vector>

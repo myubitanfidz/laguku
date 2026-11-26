@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="laguku_bg_dark">#080A0F</color>
+    <color name="laguku_surface_dark">#111520</color>
+    <color name="laguku_accent_default">#6BE2C4</color>
+    <color name="laguku_glass_tint_default">#24344D</color>
+    <color name="laguku_text_primary">#FFFFFFFF</color>
+    <color name="laguku_text_secondary">#A3FFFFFF</color>
+    <color name="laguku_text_muted">#57FFFFFF</color>
+    <color name="laguku_scrim">#7A080A0F</color>
+</resources>
