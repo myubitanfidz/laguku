@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.res.ColorStateList
 import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
@@ -207,7 +208,10 @@ class LibraryUtilitiesSheetView(
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
             minimumHeight = dp(48)
             gravity = Gravity.CENTER
-            background = LiquidGlassDrawable(context, 14f, palette)
+            background = GradientDrawable().apply {
+                setColor(0x24FFFFFF)
+                cornerRadius = 14f * density
+            }
             setPadding(dp(14), dp(8), dp(14), dp(8))
             SpringAnimatorHelper.attachPressFeedback(this)
             setOnClickListener { onDismiss() }
@@ -251,7 +255,10 @@ class LibraryUtilitiesSheetView(
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             gravity = Gravity.CENTER
             minimumHeight = dp(44)
-            background = LiquidGlassDrawable(context, 16f, palette)
+            background = GradientDrawable().apply {
+                setColor(0x1EFFFFFF)
+                cornerRadius = 16f * density
+            }
             setPadding(dp(10), dp(6), dp(10), dp(6))
             SpringAnimatorHelper.attachPressFeedback(this)
             setOnClickListener { onClick() }
@@ -287,6 +294,7 @@ class LibraryUtilitiesSheetView(
 
     private fun applyPalette(newPalette: CoverPalette) {
         sheetGlass.setPalette(newPalette)
+        sheetGlass.setSurfaceScale(LiquidGlassDrawable.GlassSurfaceScale.LARGE)
         sheetGlass.setTintProfile(baseFraction = 0.88f, accentFraction = 0.14f)
     }
 

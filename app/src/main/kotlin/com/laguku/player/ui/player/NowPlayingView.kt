@@ -6,6 +6,7 @@ import android.content.res.ColorStateList
 import android.graphics.Bitmap
 import android.graphics.Outline
 import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -282,16 +283,16 @@ class NowPlayingView(
     private val offsetValueTv = TextView(context)
     private val offsetPlusBtn = TextView(context)
     private val offsetSaveBtn = TextView(context)
-    private val offsetSaveGlass = LiquidGlassDrawable(context, 14f)
+    private val offsetSaveBg = GradientDrawable().apply { cornerRadius = 14f * resources.displayMetrics.density }
     private val anchorRow = LinearLayout(context)
     private val anchorTopBtn = TextView(context)
     private val anchorOptimalBtn = TextView(context)
     private val anchorCenterBtn = TextView(context)
-    private val anchorTopGlass = LiquidGlassDrawable(context, 12f)
-    private val anchorOptimalGlass = LiquidGlassDrawable(context, 12f)
-    private val anchorCenterGlass = LiquidGlassDrawable(context, 12f)
+    private val anchorTopBg = GradientDrawable().apply { cornerRadius = 12f * resources.displayMetrics.density }
+    private val anchorOptimalBg = GradientDrawable().apply { cornerRadius = 12f * resources.displayMetrics.density }
+    private val anchorCenterBg = GradientDrawable().apply { cornerRadius = 12f * resources.displayMetrics.density }
     private val tunerEditBtn = TextView(context)
-    private val tunerEditGlass = LiquidGlassDrawable(context, 12f)
+    private val tunerEditBg = GradientDrawable().apply { cornerRadius = 12f * resources.displayMetrics.density }
 
     private val lyricQuoteBar = LinearLayout(context)
     private val lyricQuoteGlass = LiquidGlassDrawable(context, 18f)
@@ -535,11 +536,6 @@ class NowPlayingView(
         timerPillGlass.setAmoledProgress(amoledProgress)
         amoledPillGlass.setAmoledProgress(amoledProgress)
         modalCardGlass.setAmoledProgress(amoledProgress)
-        anchorTopGlass.setAmoledProgress(amoledProgress)
-        anchorOptimalGlass.setAmoledProgress(amoledProgress)
-        anchorCenterGlass.setAmoledProgress(amoledProgress)
-        tunerEditGlass.setAmoledProgress(amoledProgress)
-        offsetSaveGlass.setAmoledProgress(amoledProgress)
         modeScrubPill.invalidate()
     }
 
@@ -1212,19 +1208,19 @@ class NowPlayingView(
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        configureAnchorPillBtn(anchorTopBtn, anchorTopGlass, "28%") {
+        configureAnchorPillBtn(anchorTopBtn, anchorTopBg, "28%") {
             setLyricHighlightFraction(PlaybackStateStore.LYRIC_ANCHOR_TOP)
             onLyricHighlightChanged?.invoke(lyricHighlightFraction)
         }
-        configureAnchorPillBtn(anchorOptimalBtn, anchorOptimalGlass, "36%") {
+        configureAnchorPillBtn(anchorOptimalBtn, anchorOptimalBg, "36%") {
             setLyricHighlightFraction(PlaybackStateStore.LYRIC_ANCHOR_OPTIMAL)
             onLyricHighlightChanged?.invoke(lyricHighlightFraction)
         }
-        configureAnchorPillBtn(anchorCenterBtn, anchorCenterGlass, "48%") {
+        configureAnchorPillBtn(anchorCenterBtn, anchorCenterBg, "48%") {
             setLyricHighlightFraction(PlaybackStateStore.LYRIC_ANCHOR_CENTER)
             onLyricHighlightChanged?.invoke(lyricHighlightFraction)
         }
-        configureAnchorPillBtn(tunerEditBtn, tunerEditGlass, "Ubah") {
+        configureAnchorPillBtn(tunerEditBtn, tunerEditBg, "Ubah") {
             val t = audioEngine?.getCurrentTrack() ?: return@configureAnchorPillBtn
             val options = arrayOf(
                 context.getString(R.string.lyrics_replace_online),
@@ -1248,7 +1244,7 @@ class NowPlayingView(
             setTextColor(0xFFFFFFFF.toInt())
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            background = offsetSaveGlass
+            background = offsetSaveBg
             minimumHeight = dp(32)
             minWidth = dp(68)
             maxLines = 1
@@ -1361,7 +1357,7 @@ class NowPlayingView(
 
     private fun configureAnchorPillBtn(
         tv: TextView,
-        glass: LiquidGlassDrawable,
+        bg: GradientDrawable,
         label: String,
         onClick: () -> Unit
     ) {
@@ -1369,7 +1365,7 @@ class NowPlayingView(
             text = label
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            background = glass
+            background = bg
             minimumHeight = dp(32)
             gravity = Gravity.CENTER
             setPadding(dp(10), dp(4), dp(10), dp(4))
@@ -1379,18 +1375,15 @@ class NowPlayingView(
     }
 
     private fun updateHighlightAnchorButtons() {
-        fun styleAnchor(tv: TextView, glass: LiquidGlassDrawable, active: Boolean) {
-            glass.setPalette(palette)
-            glass.setTintProfile(
-                baseFraction = if (active) 0.30f else 0.52f,
-                accentFraction = if (active) 0.50f else 0.14f,
-                preferAccentGlow = active
-            )
-            tv.setTextColor(if (active) 0xFFFFFFFF.toInt() else 0xA3FFFFFF.toInt())
+        val activeTint = (0x59 shl 24) or (palette.accentGlow and 0x00FFFFFF)
+        val inactiveTint = 0x1EFFFFFF
+        fun styleAnchor(tv: TextView, bg: GradientDrawable, active: Boolean) {
+            bg.setColor(if (active) activeTint else inactiveTint)
+            tv.setTextColor(if (active) 0xFFFFFFFF.toInt() else 0xB3FFFFFF.toInt())
         }
-        styleAnchor(anchorTopBtn, anchorTopGlass, abs(lyricHighlightFraction - PlaybackStateStore.LYRIC_ANCHOR_TOP) < 0.03f)
-        styleAnchor(anchorOptimalBtn, anchorOptimalGlass, abs(lyricHighlightFraction - PlaybackStateStore.LYRIC_ANCHOR_OPTIMAL) < 0.03f)
-        styleAnchor(anchorCenterBtn, anchorCenterGlass, abs(lyricHighlightFraction - PlaybackStateStore.LYRIC_ANCHOR_CENTER) < 0.03f)
+        styleAnchor(anchorTopBtn, anchorTopBg, abs(lyricHighlightFraction - PlaybackStateStore.LYRIC_ANCHOR_TOP) < 0.03f)
+        styleAnchor(anchorOptimalBtn, anchorOptimalBg, abs(lyricHighlightFraction - PlaybackStateStore.LYRIC_ANCHOR_OPTIMAL) < 0.03f)
+        styleAnchor(anchorCenterBtn, anchorCenterBg, abs(lyricHighlightFraction - PlaybackStateStore.LYRIC_ANCHOR_CENTER) < 0.03f)
     }
 
     private fun updateLyricTunerVisibility(animate: Boolean) {
@@ -2061,13 +2054,14 @@ class NowPlayingView(
         val dspActive = audioEngine?.isTenBandEqEnabled() == true ||
             (audioEngine?.getDspConfig()?.crossfeedLevel ?: 0f) > 0.01f
         labPillGlass.setTintProfile(
-            baseFraction = if (dspActive) 0.35f else 0.56f,
-            accentFraction = if (dspActive) 0.45f else 0.14f,
+            baseFraction = 0.56f,
+            accentFraction = if (dspActive) 0.38f else 0.10f,
             preferAccentGlow = dspActive
         )
         labPillIcon.imageTintList = ColorStateList.valueOf(
             if (dspActive) palette.accentGlow else 0xE6FFFFFF.toInt()
         )
+        labPillText.setTextColor(if (dspActive) palette.accentGlow else 0xE6FFFFFF.toInt())
 
         val remMs = sleepTimerEndElapsedMs - SystemClock.elapsedRealtime()
         val timerActive = remMs > 0L
@@ -2077,22 +2071,24 @@ class NowPlayingView(
             context.getString(R.string.timer_short)
         }
         timerPillGlass.setTintProfile(
-            baseFraction = if (timerActive) 0.35f else 0.56f,
-            accentFraction = if (timerActive) 0.45f else 0.14f,
-            preferAccentGlow = timerActive
+            baseFraction = 0.56f,
+            accentFraction = 0.10f,
+            preferAccentGlow = false
         )
         timerPillIcon.imageTintList = ColorStateList.valueOf(
             if (timerActive) palette.accentGlow else 0xE6FFFFFF.toInt()
         )
+        timerPillText.setTextColor(if (timerActive) palette.accentGlow else 0xE6FFFFFF.toInt())
 
         amoledPillGlass.setTintProfile(
-            baseFraction = if (amoledEnabled) 0.35f else 0.56f,
-            accentFraction = if (amoledEnabled) 0.45f else 0.14f,
-            preferAccentGlow = amoledEnabled
+            baseFraction = 0.56f,
+            accentFraction = 0.10f,
+            preferAccentGlow = false
         )
         amoledPillIcon.imageTintList = ColorStateList.valueOf(
             if (amoledEnabled) palette.accentGlow else 0xE6FFFFFF.toInt()
         )
+        amoledPillText.setTextColor(if (amoledEnabled) palette.accentGlow else 0xE6FFFFFF.toInt())
     }
 
     private fun applyPalette(newPalette: CoverPalette) {
@@ -2117,15 +2113,15 @@ class NowPlayingView(
         labPillGlass.setPalette(newPalette)
         timerPillGlass.setPalette(newPalette)
         amoledPillGlass.setPalette(newPalette)
+        lyricTunerPanelGlass.setSurfaceScale(LiquidGlassDrawable.GlassSurfaceScale.LARGE)
         modalCardGlass.setPalette(newPalette)
+        modalCardGlass.setSurfaceScale(LiquidGlassDrawable.GlassSurfaceScale.LARGE)
         modalCardGlass.setTintProfile(baseFraction = 0.85f, accentFraction = 0.15f)
         seekWaveformView.setPalette(newPalette)
         lyricsAdapter.setPalette(newPalette)
-        tunerEditGlass.setPalette(newPalette)
-        tunerEditGlass.setTintProfile(baseFraction = 0.52f, accentFraction = 0.14f)
+        tunerEditBg.setColor(0x1EFFFFFF)
         tunerEditBtn.setTextColor(0xE6FFFFFF.toInt())
-        offsetSaveGlass.setPalette(newPalette)
-        offsetSaveGlass.setTintProfile(baseFraction = 0.30f, accentFraction = 0.52f, preferAccentGlow = true)
+        offsetSaveBg.setColor((0x66 shl 24) or (newPalette.accentGlow and 0x00FFFFFF))
         updateHighlightAnchorButtons()
         updateFavoriteButton(audioEngine?.getCurrentTrack())
         updateShuffleAndRepeatState()
@@ -2228,7 +2224,10 @@ class NowPlayingView(
                 typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
                 minimumHeight = dp(48)
                 gravity = Gravity.CENTER_VERTICAL
-                background = LiquidGlassDrawable(context, 16f, palette)
+                background = GradientDrawable().apply {
+                    setColor(LiquidGlassDrawable.LayerTokens.nestedCardColor(isDarkMode = true))
+                    cornerRadius = 16f * density
+                }
                 setPadding(dp(16), dp(12), dp(16), dp(12))
                 SpringAnimatorHelper.attachPressFeedback(this)
                 setOnClickListener {
@@ -2266,7 +2265,10 @@ class NowPlayingView(
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             minimumHeight = dp(48)
             gravity = Gravity.CENTER
-            background = LiquidGlassDrawable(context, 14f, palette)
+            background = GradientDrawable().apply {
+                setColor(0x26FFFFFF)
+                cornerRadius = 14f * density
+            }
             setPadding(dp(16), dp(10), dp(16), dp(10))
             SpringAnimatorHelper.attachPressFeedback(this)
             setOnClickListener { onClick() }
@@ -2379,7 +2381,10 @@ class NowPlayingView(
                 minimumHeight = dp(48)
                 gravity = Gravity.CENTER_VERTICAL
                 setPadding(dp(12), dp(8), dp(8), dp(8))
-                background = LiquidGlassDrawable(ctx, 14f, palette)
+                background = GradientDrawable().apply {
+                    setColor(LiquidGlassDrawable.LayerTokens.nestedCardColor(isDarkMode = true))
+                    cornerRadius = 14f * density
+                }
                 layoutParams = RecyclerView.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT

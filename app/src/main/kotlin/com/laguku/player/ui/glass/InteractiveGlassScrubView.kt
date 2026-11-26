@@ -170,6 +170,7 @@ class InteractiveGlassScrubView(
     private var lastMoveTimeMs: Long = 0L
     private var isPressedScrub: Boolean = false
     private var hasDragged: Boolean = false
+    private var neutralLensMode: Boolean = false
 
     private val dwellRunnable = Runnable {
         val committed = dwellController.onDwellTimeout(SystemClock.elapsedRealtime()) ?: return@Runnable
@@ -193,9 +194,21 @@ class InteractiveGlassScrubView(
         setWillNotDraw(false)
         clipChildren = false
         clipToPadding = false
-        containerGlass.setTintProfile(baseFraction = 0.64f, accentFraction = 0.16f)
+        containerGlass.setTintProfile(baseFraction = 0.64f, accentFraction = 0.06f, preferAccentGlow = false)
         indicatorGlass.setTintProfile(baseFraction = 0.28f, accentFraction = 0.42f, preferAccentGlow = true)
         addView(slotsRow, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+    }
+
+    fun setNeutralLensMode(neutral: Boolean) {
+        neutralLensMode = neutral
+        if (neutral) {
+            containerGlass.setTintProfile(baseFraction = 0.64f, accentFraction = 0.04f, preferAccentGlow = false)
+            indicatorGlass.setTintProfile(baseFraction = 0.22f, accentFraction = 0.10f, preferAccentGlow = false)
+        } else {
+            containerGlass.setTintProfile(baseFraction = 0.64f, accentFraction = 0.06f, preferAccentGlow = false)
+            indicatorGlass.setTintProfile(baseFraction = 0.28f, accentFraction = 0.42f, preferAccentGlow = true)
+        }
+        invalidate()
     }
 
     fun setSlots(views: List<View>) {
@@ -296,7 +309,11 @@ class InteractiveGlassScrubView(
                 dwellController.onTouchDown(selectedIndex)
                 mainHandler.removeCallbacks(dwellRunnable)
                 performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                indicatorGlass.setTintProfile(baseFraction = 0.24f, accentFraction = 0.52f, preferAccentGlow = true)
+                indicatorGlass.setTintProfile(
+                    baseFraction = 0.24f,
+                    accentFraction = if (neutralLensMode) 0.12f else 0.52f,
+                    preferAccentGlow = !neutralLensMode
+                )
                 indicatorGlass.setMotionState(0f, touchActive = true)
                 animateCapsuleScale(PRESS_SCALE_X, PRESS_SCALE_Y)
                 return true
@@ -353,7 +370,11 @@ class InteractiveGlassScrubView(
                 }
                 selectedIndex = target
                 previewIndex = target
-                indicatorGlass.setTintProfile(baseFraction = 0.28f, accentFraction = 0.42f, preferAccentGlow = true)
+                indicatorGlass.setTintProfile(
+                    baseFraction = if (neutralLensMode) 0.22f else 0.28f,
+                    accentFraction = if (neutralLensMode) 0.10f else 0.42f,
+                    preferAccentGlow = !neutralLensMode
+                )
                 indicatorGlass.setMotionState(0f, touchActive = false)
                 animateCapsuleScale(1f, 1f)
                 moveCapsuleToSlot(target, animate = true)

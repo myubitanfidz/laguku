@@ -9,6 +9,7 @@ import android.graphics.Canvas
 import android.graphics.Outline
 import android.graphics.Paint
 import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
 import android.text.Editable
@@ -129,7 +130,10 @@ class LibraryView(
     private val recyclerView = RecyclerView(context)
     private val emptyStateView = TextView(context)
     private val permissionCard = LinearLayout(context)
-    private val permissionGlass = LiquidGlassDrawable(context, 22f)
+    private val permissionCardBg = GradientDrawable().apply {
+        setColor(LiquidGlassDrawable.LayerTokens.contentCardColor(isDarkMode = true))
+        cornerRadius = 20f * resources.displayMetrics.density
+    }
     private val permissionGrantBtn = TextView(context)
 
     private val listAdapter = LibraryAdapter(
@@ -235,6 +239,8 @@ class LibraryView(
 
     fun setAmoledMode(enabled: Boolean) {
         setBackgroundColor(if (enabled) 0xFF000000.toInt() else 0x00000000)
+        val groundColor = if (enabled) 0xFF000000.toInt() else LiquidGlassDrawable.LayerTokens.DARK_BASE_GROUND
+        (listContainer.background as? GradientDrawable)?.setColor(groundColor)
     }
 
     fun handleBackStep(): Boolean {
@@ -370,6 +376,13 @@ class LibraryView(
         }
         buildPermissionCard()
 
+        listContainer.apply {
+            background = GradientDrawable().apply {
+                setColor(LiquidGlassDrawable.LayerTokens.DARK_BASE_GROUND)
+                cornerRadius = 18f * density
+            }
+            clipToOutline = true
+        }
         listContainer.addView(recyclerView, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         listContainer.addView(emptyStateView, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, Gravity.CENTER))
         listContainer.addView(permissionCard, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT, Gravity.CENTER))
@@ -600,7 +613,8 @@ class LibraryView(
         permissionCard.apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
-            background = permissionGlass
+            background = permissionCardBg
+            elevation = 6f * density
             setPadding(dp(24), dp(24), dp(24), dp(24))
             visibility = View.GONE
         }
@@ -737,6 +751,7 @@ class LibraryView(
         for ((tab, titleRes, iconRes) in tabsSpec) {
             tabViews.add(TabItemView(context, tab, context.getString(titleRes), iconRes))
         }
+        bottomScrubBar.setNeutralLensMode(true)
         bottomScrubBar.setSlots(tabViews)
         bottomScrubBar.onSlotPreviewChanged = { idx ->
             for (i in 0 until tabViews.size) {
@@ -976,19 +991,21 @@ class LibraryView(
         searchGlass.setPalette(newPalette)
         (drillBackBtn.background as? LiquidGlassDrawable)?.setPalette(newPalette)
         shuffleAllGlass.setPalette(newPalette)
+        shuffleAllGlass.setTintProfile(baseFraction = 0.34f, accentFraction = 0.45f, preferAccentGlow = true)
         shuffleAllIcon.imageTintList = ColorStateList.valueOf(newPalette.accentGlow)
         searchToggleGlass.setPalette(newPalette)
+        searchToggleGlass.setTintProfile(baseFraction = 0.56f, accentFraction = 0.10f, preferAccentGlow = false)
         utilitiesGlass.setPalette(newPalette)
+        utilitiesGlass.setTintProfile(baseFraction = 0.56f, accentFraction = 0.10f, preferAccentGlow = false)
         if (searchBox.visibility == View.VISIBLE) {
             searchToggleIcon.imageTintList = ColorStateList.valueOf(newPalette.accentGlow)
         }
-        permissionGlass.setPalette(newPalette)
         (permissionGrantBtn.background as? LiquidGlassDrawable)?.setPalette(newPalette)
         (importBtn.background as? LiquidGlassDrawable)?.setPalette(newPalette)
         (exportBtn.background as? LiquidGlassDrawable)?.setPalette(newPalette)
         (createPlaylistBtn.background as? LiquidGlassDrawable)?.setPalette(newPalette)
         miniPlayerGlass.setPalette(newPalette)
-        miniPlayerGlass.setTintProfile(baseFraction = 0.65f, accentFraction = 0.22f)
+        miniPlayerGlass.setTintProfile(baseFraction = 0.65f, accentFraction = 0.18f)
         miniProgressBar.setAccentColor(newPalette.accentGlow)
         bottomScrubBar.setPalette(newPalette)
         for (item in tabViews) {
@@ -1037,7 +1054,7 @@ class LibraryView(
         fun setSelectedState(selected: Boolean, palette: CoverPalette) {
             if (selected) {
                 iconView.imageTintList = ColorStateList.valueOf(palette.accentGlow)
-                labelView.setTextColor(0xFFFFFFFF.toInt())
+                labelView.setTextColor(palette.accentGlow)
             } else {
                 iconView.imageTintList = ColorStateList.valueOf(0x8FFFFFFF.toInt())
                 labelView.setTextColor(0x8FFFFFFF.toInt())
@@ -1120,19 +1137,28 @@ class LibraryView(
             val density = ctx.resources.displayMetrics.density
             val dp = { v: Int -> (v * density).toInt() }
 
-            val row = LinearLayout(ctx).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                minimumHeight = dp(56)
+            val cardBg = GradientDrawable().apply {
+                setColor(LiquidGlassDrawable.LayerTokens.contentCardColor(isDarkMode = true))
+                cornerRadius = 14f * density
+            }
+            val rowWrapper = LinearLayout(ctx).apply {
+                orientation = LinearLayout.VERTICAL
                 layoutParams = RecyclerView.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT
                 ).apply {
-                    bottomMargin = dp(8)
+                    bottomMargin = dp(6)
                 }
-                setPadding(dp(12), dp(10), dp(14), dp(10))
-                background = LiquidGlassDrawable(ctx, 18f, palette)
+                background = cardBg
+                elevation = 2f * density
                 SpringAnimatorHelper.attachPressFeedback(this)
+            }
+
+            val row = LinearLayout(ctx).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                minimumHeight = dp(56)
+                setPadding(dp(12), dp(10), dp(14), dp(10))
             }
 
             val iconBadge = ImageView(ctx).apply {
@@ -1178,14 +1204,29 @@ class LibraryView(
             row.addView(textCol, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
             row.addView(trailing, LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT))
 
-            val holder = EntryViewHolder(row, iconBadge, primary, secondary, trailing, LiquidGlassDrawable(ctx, 12f, palette))
-            row.setOnClickListener {
+            val hairlineHeight = (0.5f * density).toInt().coerceAtLeast(1)
+            val hairline = View(ctx).apply {
+                setBackgroundColor(LiquidGlassDrawable.LayerTokens.hairlineColor(isDarkMode = true))
+            }
+
+            rowWrapper.addView(row, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
+            rowWrapper.addView(hairline, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, hairlineHeight).apply {
+                marginStart = dp(64)
+                marginEnd = dp(14)
+            })
+
+            val folderBadgeBg = GradientDrawable().apply {
+                setColor(LiquidGlassDrawable.LayerTokens.nestedCardColor(isDarkMode = true))
+                cornerRadius = 10f * density
+            }
+            val holder = EntryViewHolder(rowWrapper, iconBadge, primary, secondary, trailing, folderBadgeBg)
+            rowWrapper.setOnClickListener {
                 val pos = holder.bindingAdapterPosition
                 if (pos in entries.indices) {
                     onEntryClick(entries[pos])
                 }
             }
-            row.setOnLongClickListener {
+            rowWrapper.setOnLongClickListener {
                 val pos = holder.bindingAdapterPosition
                 if (pos in entries.indices) {
                     onEntryLongClick(entries[pos])
@@ -1196,8 +1237,6 @@ class LibraryView(
         }
 
         override fun onBindViewHolder(holder: EntryViewHolder, position: Int) {
-            (holder.itemView.background as? LiquidGlassDrawable)?.setPalette(palette)
-
             val badgePad = (9f * holder.itemView.resources.displayMetrics.density).toInt()
             when (val entry = entries[position]) {
                 is ListEntry.TrackEntry -> {
@@ -1213,9 +1252,8 @@ class LibraryView(
                 }
                 is ListEntry.FolderEntry -> {
                     holder.iconBadge.tag = null
-                    holder.folderBadgeGlass.setPalette(palette)
-                    if (holder.iconBadge.background !== holder.folderBadgeGlass) {
-                        holder.iconBadge.background = holder.folderBadgeGlass
+                    if (holder.iconBadge.background !== holder.folderBadgeBg) {
+                        holder.iconBadge.background = holder.folderBadgeBg
                     }
                     holder.iconBadge.scaleType = ImageView.ScaleType.CENTER_INSIDE
                     holder.iconBadge.setPadding(badgePad, badgePad, badgePad, badgePad)
@@ -1249,9 +1287,8 @@ class LibraryView(
                 }
                 is ListEntry.PlaylistEntry -> {
                     holder.iconBadge.tag = null
-                    holder.folderBadgeGlass.setPalette(palette)
-                    if (holder.iconBadge.background !== holder.folderBadgeGlass) {
-                        holder.iconBadge.background = holder.folderBadgeGlass
+                    if (holder.iconBadge.background !== holder.folderBadgeBg) {
+                        holder.iconBadge.background = holder.folderBadgeBg
                     }
                     holder.iconBadge.scaleType = ImageView.ScaleType.CENTER_INSIDE
                     holder.iconBadge.setPadding(badgePad, badgePad, badgePad, badgePad)
@@ -1270,7 +1307,7 @@ class LibraryView(
             val primary: TextView,
             val secondary: TextView,
             val trailing: TextView,
-            val folderBadgeGlass: LiquidGlassDrawable
+            val folderBadgeBg: GradientDrawable
         ) : RecyclerView.ViewHolder(itemView) {
             private val trailBuf = CharArray(16)
 
