@@ -5,6 +5,7 @@ import com.laguku.player.lyrics.LrcParser
 import com.laguku.player.metadata.BinaryTagReader
 import com.laguku.player.model.LyricSource
 import com.laguku.player.ui.motion.SpringAnimatorHelper
+import com.laguku.player.ui.player.LyricMotionSpec
 import com.laguku.player.ui.player.LyricsRecyclerAdapter
 import com.laguku.player.ui.player.NowPlayingView
 import com.laguku.player.ui.player.WaveformPillSeekBarView
@@ -252,10 +253,11 @@ class Wave4FeaturesTest {
 
     @Test
     fun lyricMotionMath_interpolatesFocusScaleAlphaColorBlurPoolAndSpringScroll() {
-        assertEquals(0.95f, LyricsRecyclerAdapter.LyricMotionMath.computeFocusScale(0f), 0.0001f)
+        assertEquals(0.94f, LyricsRecyclerAdapter.LyricMotionMath.computeFocusScale(0f), 0.0001f)
         assertEquals(1.00f, LyricsRecyclerAdapter.LyricMotionMath.computeFocusScale(1f), 0.0001f)
         assertEquals(0.38f, LyricsRecyclerAdapter.LyricMotionMath.computeFocusAlpha(0f), 0.0001f)
         assertEquals(1.00f, LyricsRecyclerAdapter.LyricMotionMath.computeFocusAlpha(1f), 0.0001f)
+        assertEquals(3.5f, LyricsRecyclerAdapter.LyricMotionMath.BLUR_RADII.last(), 0.0001f)
         assertEquals(0x99FFFFFF.toInt(), LyricsRecyclerAdapter.LyricMotionMath.interpolateColor(0x99FFFFFF.toInt(), 0xFFFFFFFF.toInt(), 0f))
         assertEquals(0xFFFFFFFF.toInt(), LyricsRecyclerAdapter.LyricMotionMath.interpolateColor(0x99FFFFFF.toInt(), 0xFFFFFFFF.toInt(), 1f))
         assertFalse(LyricsRecyclerAdapter.LyricMotionMath.HAS_ITEM_BACKGROUND)
@@ -284,6 +286,27 @@ class Wave4FeaturesTest {
         }
         assertTrue(settled)
         assertEquals(120f, applied, 0.5f)
+    }
+
+    @Test
+    fun manualScrollPauseController_waits2500msAfterReleaseAndTapSeekResetsImmediately() {
+        assertEquals(2_500L, LyricMotionSpec.MANUAL_SCROLL_PAUSE_MS)
+        val controller = NowPlayingView.ManualScrollPauseController()
+        assertFalse(controller.isPaused)
+
+        controller.onDragStarted()
+        assertTrue(controller.isPaused)
+        assertTrue(controller.isDragging)
+        assertFalse(controller.shouldAutoResume(5_000L))
+
+        controller.onDragReleased(nowElapsedMs = 10_000L)
+        assertFalse(controller.isDragging)
+        assertFalse(controller.shouldAutoResume(12_499L))
+        assertTrue(controller.shouldAutoResume(12_500L))
+
+        controller.onLineTapSeek()
+        assertFalse(controller.isPaused)
+        assertFalse(controller.shouldAutoResume(15_000L))
     }
 
     // --- Synthetic Binary Helpers ---

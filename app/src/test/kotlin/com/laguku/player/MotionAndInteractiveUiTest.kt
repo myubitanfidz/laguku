@@ -4,6 +4,7 @@ import com.laguku.player.data.PlaybackStateStore
 import com.laguku.player.ui.glass.InteractiveGlassScrubView
 import com.laguku.player.ui.library.LibraryView
 import com.laguku.player.ui.motion.SpringAnimatorHelper
+import com.laguku.player.ui.player.LyricMotionSpec
 import com.laguku.player.ui.player.LyricsRecyclerAdapter
 import com.laguku.player.ui.player.NowPlayingView
 import com.laguku.player.ui.player.VinylDiscVisualizerView
@@ -195,35 +196,59 @@ class MotionAndInteractiveUiTest {
 
     @Test
     fun subPixelScrollAccumulator_withUnifiedLyricSpringConvergesToZeroResidualError() {
-        assertEquals(130f, LyricsRecyclerAdapter.LyricMotionMath.LYRIC_SCROLL_STIFFNESS, 0.0001f)
-        assertEquals(0.96f, LyricsRecyclerAdapter.LyricMotionMath.LYRIC_SCROLL_DAMPING_RATIO, 0.0001f)
+        assertEquals(120f, LyricsRecyclerAdapter.LyricMotionMath.LYRIC_SCROLL_STIFFNESS, 0.0001f)
+        assertEquals(0.78f, LyricsRecyclerAdapter.LyricMotionMath.LYRIC_SCROLL_DAMPING_RATIO, 0.0001f)
+        assertEquals(0.94f, LyricsRecyclerAdapter.LyricMotionMath.FOCUS_SCALE_MIN, 0.0001f)
         assertFalse(LyricsRecyclerAdapter.LyricMotionMath.HAS_ITEM_BACKGROUND)
 
-        val solver = SpringAnimatorHelper.SpringSolver(
-            value = 0f,
-            target = 137.4f,
-            stiffness = LyricsRecyclerAdapter.LyricMotionMath.LYRIC_SCROLL_STIFFNESS,
-            dampingRatio = LyricsRecyclerAdapter.LyricMotionMath.LYRIC_SCROLL_DAMPING_RATIO,
-            valueThreshold = 0.05f,
-            velocityThreshold = 0.5f
-        )
-        val accumulator = LyricsRecyclerAdapter.LyricMotionMath.SubPixelScrollAccumulator()
-        var lastVal = 0f
+        val adapter = LyricsRecyclerAdapter(onLineTap = { _, _ -> })
+        adapter.startSpringScrollTarget(137.4f)
         var scrolledPx = 0
-        var settled = false
         var ticks = 0
-        while (!settled && ticks < 500) {
-            settled = solver.step(1f / 60f)
-            val floatDelta = solver.value - lastVal
-            lastVal = solver.value
-            scrolledPx += accumulator.accumulate(floatDelta)
+        while (adapter.isScrollSpringActive() && ticks < 500) {
+            scrolledPx += adapter.stepSpringScroll(1f / 60f)
             ticks++
         }
-        scrolledPx += accumulator.flushRemainder()
-        assertTrue(settled)
+        assertFalse(adapter.isScrollSpringActive())
         assertEquals(137, scrolledPx)
-        assertEquals(0f, accumulator.subPixelRemainder, 0.0001f)
-        assertEquals(0f, accumulator.remainder, 0.0001f)
+        assertEquals(0f, adapter.subPixelRemainder, 0.0001f)
+    }
+
+    @Test
+    fun lyricMotionSpec_exposesExactPhysicsConstantsStaggerWordSweepAndPause() {
+        assertEquals(120f, LyricMotionSpec.SPRING_STIFFNESS, 0.0001f)
+        assertEquals(0.78f, LyricMotionSpec.SPRING_DAMPING_RATIO, 0.0001f)
+        assertEquals(0.36f, LyricMotionSpec.FOCUS_ANCHOR_FRACTION, 0.0001f)
+        assertEquals(40L, LyricMotionSpec.STAGGER_STEP_MS)
+        assertEquals(90L, LyricMotionSpec.STAGGER_MAX_MS)
+        assertEquals(0.94f, LyricMotionSpec.INACTIVE_SCALE, 0.0001f)
+        assertEquals(3.5f, LyricMotionSpec.MAX_DEPTH_BLUR_PX, 0.0001f)
+        assertTrue(LyricMotionSpec.WORD_SWEEP_ENABLED)
+        assertEquals(2_500L, LyricMotionSpec.MANUAL_SCROLL_PAUSE_MS)
+
+        // Stagger applies only to rows below activeIndex (capped at 90ms)
+        assertEquals(0L, LyricsRecyclerAdapter.LyricMotionMath.computeStaggerDelayMs(rowIndex = 1, activeIndex = 2))
+        assertEquals(0L, LyricsRecyclerAdapter.LyricMotionMath.computeStaggerDelayMs(rowIndex = 2, activeIndex = 2))
+        assertEquals(40L, LyricsRecyclerAdapter.LyricMotionMath.computeStaggerDelayMs(rowIndex = 3, activeIndex = 2))
+        assertEquals(80L, LyricsRecyclerAdapter.LyricMotionMath.computeStaggerDelayMs(rowIndex = 4, activeIndex = 2))
+        assertEquals(90L, LyricsRecyclerAdapter.LyricMotionMath.computeStaggerDelayMs(rowIndex = 5, activeIndex = 2))
+
+        // Downward microLagY only affects rows below activeIndex
+        assertEquals(0f, LyricsRecyclerAdapter.LyricMotionMath.computeInitialMicroLagY(1, 2, 120f, 3f), 0.0001f)
+        assertTrue(LyricsRecyclerAdapter.LyricMotionMath.computeInitialMicroLagY(3, 2, 120f, 3f) > 0f)
+        assertEquals(0f, LyricsRecyclerAdapter.LyricMotionMath.computeInitialMicroLagY(3, 2, 120f, 3f, reducedMotion = true), 0.0001f)
+
+        // Word-by-word sweep progression
+        val parsed = com.laguku.player.lyrics.LrcParser.parse("[00:01.00]<00:01.00>Hello <00:01.50>world")
+        val words = parsed.lines.first().words
+        val midProgress = LyricsRecyclerAdapter.LyricMotionMath.computeSweepCharProgress(
+            textLength = parsed.lines.first().text.length,
+            words = words,
+            lineStartMs = 1_000L,
+            lineEndMs = 2_500L,
+            positionMs = 1_750L
+        )
+        assertTrue("Expected sweep midProgress inside line text, got $midProgress", midProgress > 6f && midProgress < 11f)
     }
 
     @Test

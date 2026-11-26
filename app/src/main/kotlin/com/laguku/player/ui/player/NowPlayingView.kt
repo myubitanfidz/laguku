@@ -189,6 +189,46 @@ class NowPlayingView(
         }
     }
 
+    class ManualScrollPauseController(
+        val resumeDelayMs: Long = LyricMotionSpec.MANUAL_SCROLL_PAUSE_MS
+    ) {
+        var isPaused: Boolean = false
+            private set
+        var isDragging: Boolean = false
+            private set
+        var releaseElapsedMs: Long = -1L
+            private set
+
+        fun onDragStarted() {
+            isPaused = true
+            isDragging = true
+            releaseElapsedMs = -1L
+        }
+
+        fun onDragReleased(nowElapsedMs: Long) {
+            if (!isPaused) return
+            isDragging = false
+            releaseElapsedMs = nowElapsedMs
+        }
+
+        fun shouldAutoResume(nowElapsedMs: Long): Boolean {
+            if (!isPaused || isDragging || releaseElapsedMs < 0L) return false
+            return (nowElapsedMs - releaseElapsedMs) >= resumeDelayMs
+        }
+
+        fun onLineTapSeek() {
+            isPaused = false
+            isDragging = false
+            releaseElapsedMs = -1L
+        }
+
+        fun onResumed() {
+            isPaused = false
+            isDragging = false
+            releaseElapsedMs = -1L
+        }
+    }
+
     var onOpenAudioLab: (() -> Unit)? = null
     var onToggleAmoled: (() -> Unit)? = null
     var onSaveLyricOffset: ((Track, Long) -> Unit)? = null
@@ -212,6 +252,7 @@ class NowPlayingView(
     private var displayMode: DisplayMode = DisplayMode.FULL_COVER
     private var parsedLyrics: ParsedLyrics = ParsedLyrics(emptyList(), isSynced = false)
     private var manualScrollPaused: Boolean = false
+    private val manualScrollController = ManualScrollPauseController()
     private var sleepTimerEndElapsedMs: Long = 0L
 
     private var userLyricOffsetMs: Long = 0L
@@ -433,6 +474,9 @@ class NowPlayingView(
     fun setHostActive(active: Boolean) {
         hostActive = active
         vinylDiscView.setHostActive(active)
+        if (::lyricsAdapter.isInitialized) {
+            lyricsAdapter.setHostActive(active)
+        }
         if (!active) {
             mainHandler.removeCallbacks(playDwellRunnable)
             modeScrubPill.cancelActiveInteractions()
@@ -764,11 +808,14 @@ class NowPlayingView(
     fun onPlaybackStateChanged(isPlaying: Boolean) {
         playPauseButton.setImageResource(if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
         vinylDiscView.setPlaying(isPlaying)
+        lyricsAdapter.setPlaybackActive(isPlaying)
     }
 
     fun onPositionUpdated(positionMs: Long, durationMs: Long) {
         seekWaveformView.setPosition(positionMs, durationMs)
         updateActiveLyricForPosition(positionMs, forceScroll = false)
+        val effectivePosMs = (positionMs + userLyricOffsetMs + btLyricOffsetMs).coerceAtLeast(0L)
+        lyricsAdapter.updatePlaybackPosition(effectivePosMs)
     }
 
     fun onQualityChanged(quality: AudioQualityInfo) {
@@ -1019,12 +1066,15 @@ class NowPlayingView(
         }
 
         lyricsAdapter = LyricsRecyclerAdapter(
-            onLineTap = { line, _ ->
+            onLineTap = { line, pos ->
                 if (zenModeActive) {
                     setZenMode(false)
-                } else if (parsedLyrics.isSynced) {
+                } else if (parsedLyrics.isSynced || line.timestampMs > 0L) {
                     audioEngine?.seekTo(line.timestampMs)
-                    resumeLyricsAutoScroll(scrollNow = true)
+                    manualScrollController.onLineTapSeek()
+                    resumeLyricsAutoScroll(scrollNow = false)
+                    lyricsAdapter.setActiveIndex(pos, lyricsRecycler, autoScroll = true)
+                    lyricsAdapter.updatePlaybackPosition(line.timestampMs)
                 }
             },
             onSelectionChanged = { selected ->
@@ -1096,14 +1146,21 @@ class NowPlayingView(
                 override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
                     if (newState == RecyclerView.SCROLL_STATE_DRAGGING && parsedLyrics.isSynced && parsedLyrics.lines.isNotEmpty()) {
                         lyricsAdapter.cancelScrollAnimation(recyclerView)
+                        manualScrollController.onDragStarted()
+                        mainHandler.removeCallbacks(autoResumeRunnable)
                         pauseLyricsAutoScroll()
-                    } else if (newState == RecyclerView.SCROLL_STATE_IDLE && manualScrollPaused) {
+                    } else if ((newState == RecyclerView.SCROLL_STATE_IDLE || newState == RecyclerView.SCROLL_STATE_SETTLING) && manualScrollPaused) {
+                        manualScrollController.onDragReleased(SystemClock.elapsedRealtime())
                         scheduleAutoResume()
                     }
                 }
             })
             setOnTouchListener { _, ev ->
                 zenGestureDetector.onTouchEvent(ev)
+                if ((ev.actionMasked == MotionEvent.ACTION_UP || ev.actionMasked == MotionEvent.ACTION_CANCEL) && manualScrollPaused) {
+                    manualScrollController.onDragReleased(SystemClock.elapsedRealtime())
+                    scheduleAutoResume()
+                }
                 false
             }
         }
@@ -2050,6 +2107,9 @@ class NowPlayingView(
             }
         }
 
+        if (::lyricsAdapter.isInitialized) {
+            lyricsAdapter.setLyricsModeActive(mode == DisplayMode.LYRICS_FOCUS)
+        }
         if (mode == DisplayMode.LYRICS_FOCUS) {
             lyricTunerState.onEnterLyricsMode()
             updateLyricTunerVisibility(animate = false)
@@ -2104,10 +2164,10 @@ class NowPlayingView(
 
     private fun pauseLyricsAutoScroll() {
         manualScrollPaused = true
+        manualScrollController.onDragStarted()
         if (returnToActivePill.visibility != View.VISIBLE) {
             SpringAnimatorHelper.springReveal(returnToActivePill, fromTranslationY = dp(8).toFloat(), fromScale = 0.94f)
         }
-        scheduleAutoResume()
     }
 
     private fun scheduleAutoResume() {
@@ -2118,6 +2178,7 @@ class NowPlayingView(
     private fun resumeLyricsAutoScroll(scrollNow: Boolean) {
         mainHandler.removeCallbacks(autoResumeRunnable)
         manualScrollPaused = false
+        manualScrollController.onResumed()
         SpringAnimatorHelper.springDismiss(returnToActivePill, toTranslationY = dp(8).toFloat(), toScale = 0.94f)
         if (scrollNow) {
             val idx = lyricsAdapter.getActiveIndex()
@@ -2569,7 +2630,7 @@ class NowPlayingView(
     }
 
     private companion object {
-        const val AUTO_RESUME_DELAY_MS = 3_000L
+        const val AUTO_RESUME_DELAY_MS = LyricMotionSpec.MANUAL_SCROLL_PAUSE_MS
         const val PREFS_NAME = "laguku_prefs"
         const val KEY_FAVORITES = "favorite_paths"
         const val CHANNEL_PLAY_DRAG = 21

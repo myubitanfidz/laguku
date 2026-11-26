@@ -1,12 +1,20 @@
 package com.laguku.player.ui.player
 
+import android.content.Context
+import android.graphics.Canvas
+import android.graphics.LinearGradient
+import android.graphics.Matrix
+import android.graphics.Paint
+import android.graphics.RadialGradient
 import android.graphics.RenderEffect
 import android.graphics.Shader
 import android.graphics.Typeface
 import android.os.Build
 import android.util.TypedValue
+import android.view.Choreographer
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
+import android.view.MotionEvent
 import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -16,18 +24,36 @@ import com.laguku.player.data.PlaybackStateStore
 import com.laguku.player.model.CoverPalette
 import com.laguku.player.model.LyricLine
 import com.laguku.player.model.ParsedLyrics
+import com.laguku.player.model.WordToken
 import com.laguku.player.ui.glass.CoverPaletteExtractor
 import com.laguku.player.ui.motion.SpringAnimatorHelper
 import kotlin.math.abs
+import kotlin.math.min
 import kotlin.math.roundToInt
+
+/**
+ * Calibrated Apple Music-style physics and timing constants for lyrics motion.
+ */
+object LyricMotionSpec {
+    const val SPRING_STIFFNESS = 120f
+    const val SPRING_DAMPING_RATIO = 0.78f
+    const val FOCUS_ANCHOR_FRACTION = 0.36f
+    const val STAGGER_STEP_MS = 40L
+    const val STAGGER_MAX_MS = 90L
+    const val INACTIVE_SCALE = 0.94f
+    const val MAX_DEPTH_BLUR_PX = 3.5f
+    const val WORD_SWEEP_ENABLED = true
+    const val MANUAL_SCROLL_PAUSE_MS = 2_500L
+}
 
 /**
  * Synced & static 1-3 layer lyrics adapter with:
  * - Unclipped multi-line & 3-layer support (original + romanization + translation)
  * - Continuous Choreographer spring scroll driver targeting [highlightFraction] (default 36%)
- * - Per-item spring focusProgress (0..1) interpolating scale (0.94 -> 1.0), opacity (0.42 -> 1.0),
- *   and pre-allocated RenderEffect blur pool (0f, 1.5f, 3f, 5f, 7f on API 31+)
- * - Zero object allocations inside [onBindViewHolder] and per-frame callbacks
+ * - Staggered downward wave [microLagY] on rows below the active line
+ * - Multi-line word-by-word sweep highlight ([SweepLyricTextView])
+ * - Per-item in-place focus interpolation (scale 0.94 -> 1.0, opacity 0.38 -> 1.0, RenderEffect <= 3.5px)
+ * - Zero object allocations inside [onBindViewHolder], [onDraw], and [Choreographer.FrameCallback]
  */
 class LyricsRecyclerAdapter(
     private val onLineTap: (LyricLine, Int) -> Unit,
@@ -95,21 +121,85 @@ class LyricsRecyclerAdapter(
     }
 
     object LyricMotionMath {
-        const val LYRIC_SCROLL_STIFFNESS = 130f
-        const val LYRIC_SCROLL_DAMPING_RATIO = 0.96f
-        const val FOCUS_SCALE_MIN = 0.95f
+        const val LYRIC_SCROLL_STIFFNESS = LyricMotionSpec.SPRING_STIFFNESS
+        const val LYRIC_SCROLL_DAMPING_RATIO = LyricMotionSpec.SPRING_DAMPING_RATIO
+        const val FOCUS_SCALE_MIN = LyricMotionSpec.INACTIVE_SCALE
         const val FOCUS_SCALE_MAX = 1.00f
         const val FOCUS_ALPHA_MIN = 0.38f
         const val FOCUS_ALPHA_MAX = 1.00f
         const val HAS_ITEM_BACKGROUND = false
 
-        val BLUR_RADII = floatArrayOf(0f, 1.5f, 3f, 5f, 7f)
+        val BLUR_RADII = floatArrayOf(0f, 0.9f, 1.8f, 2.6f, LyricMotionSpec.MAX_DEPTH_BLUR_PX)
 
         fun computeFocusScale(focusProgress: Float): Float =
             FOCUS_SCALE_MIN + (FOCUS_SCALE_MAX - FOCUS_SCALE_MIN) * focusProgress.coerceIn(0f, 1f)
 
         fun computeFocusAlpha(focusProgress: Float): Float =
             FOCUS_ALPHA_MIN + (FOCUS_ALPHA_MAX - FOCUS_ALPHA_MIN) * focusProgress.coerceIn(0f, 1f)
+
+        fun computeStaggerDelayMs(rowIndex: Int, activeIndex: Int): Long {
+            if (activeIndex < 0 || rowIndex <= activeIndex) return 0L
+            return ((rowIndex - activeIndex).toLong() * LyricMotionSpec.STAGGER_STEP_MS)
+                .coerceAtMost(LyricMotionSpec.STAGGER_MAX_MS)
+        }
+
+        fun computeInitialMicroLagY(
+            rowIndex: Int,
+            activeIndex: Int,
+            scrollDeltaPx: Float,
+            density: Float,
+            reducedMotion: Boolean = false
+        ): Float {
+            if (reducedMotion || activeIndex < 0 || rowIndex <= activeIndex || scrollDeltaPx <= 0f) return 0f
+            val delayMs = computeStaggerDelayMs(rowIndex, activeIndex)
+            val waveScale = 0.45f + 0.55f * (delayMs.toFloat() / LyricMotionSpec.STAGGER_MAX_MS.toFloat())
+            val maxLagPx = 18f * density.coerceAtLeast(1f)
+            return min(scrollDeltaPx * 0.28f, maxLagPx) * waveScale
+        }
+
+        fun computeSweepCharProgress(
+            textLength: Int,
+            words: List<WordToken>,
+            lineStartMs: Long,
+            lineEndMs: Long,
+            positionMs: Long,
+            sweepEnabled: Boolean = LyricMotionSpec.WORD_SWEEP_ENABLED
+        ): Float {
+            if (textLength <= 0) return 0f
+            if (!sweepEnabled) return textLength.toFloat()
+            if (positionMs <= lineStartMs) return 0f
+
+            if (words.isNotEmpty()) {
+                var charCursor = 0
+                for (i in words.indices) {
+                    val token = words[i]
+                    val tokenLen = token.text.length.coerceAtLeast(1)
+                    val tokenStart = token.startMs
+                    val tokenEnd = if (i + 1 < words.size) {
+                        words[i + 1].startMs.coerceAtLeast(tokenStart + 120L)
+                    } else {
+                        val fallbackEnd = if (lineEndMs > tokenStart) lineEndMs else tokenStart + 420L
+                        fallbackEnd.coerceIn(tokenStart + 180L, tokenStart + 2_000L)
+                    }
+                    if (positionMs < tokenStart) {
+                        return charCursor.toFloat().coerceAtMost(textLength.toFloat())
+                    }
+                    if (positionMs < tokenEnd) {
+                        val frac = ((positionMs - tokenStart).toFloat() / (tokenEnd - tokenStart).toFloat())
+                            .coerceIn(0f, 1f)
+                        return (charCursor + tokenLen * frac).coerceIn(0f, textLength.toFloat())
+                    }
+                    charCursor += token.text.length
+                }
+                return textLength.toFloat()
+            }
+
+            val rawDuration = if (lineEndMs > lineStartMs) lineEndMs - lineStartMs else 2_800L
+            val sweepDuration = rawDuration.coerceIn(600L, 6_000L)
+            val elapsed = (positionMs - lineStartMs).coerceAtLeast(0L)
+            val fraction = (elapsed.toFloat() / sweepDuration.toFloat()).coerceIn(0f, 1f)
+            return textLength * fraction
+        }
 
         fun interpolateColor(fromColor: Int, toColor: Int, fraction: Float): Int {
             val t = fraction.coerceIn(0f, 1f)
@@ -187,7 +277,7 @@ class LyricsRecyclerAdapter(
     private var lines: List<LyricLine> = emptyList()
     private var synced: Boolean = false
     private var activeIndex: Int = -1
-    private var highlightFraction: Float = PlaybackStateStore.LYRIC_ANCHOR_OPTIMAL
+    private var highlightFraction: Float = LyricMotionSpec.FOCUS_ANCHOR_FRACTION
     private var topSafeMarginPx: Int = 0
     private var bottomSafeMarginPx: Int = 0
     private var defaultFadePx: Int = 0
@@ -202,10 +292,295 @@ class LyricsRecyclerAdapter(
     )
 
     private val subPixelAccumulator = LyricMotionMath.SubPixelScrollAccumulator()
-    private var lastSpringScrollValue: Float = 0f
+    var subPixelRemainder: Float = 0f
+    private val scrollSpringSolver = SpringAnimatorHelper.SpringSolver(
+        stiffness = LyricMotionSpec.SPRING_STIFFNESS,
+        dampingRatio = LyricMotionSpec.SPRING_DAMPING_RATIO,
+        valueThreshold = 0.05f,
+        velocityThreshold = 0.5f
+    )
+    private var scrollSpringActive: Boolean = false
+    private var lastScrollSolverValue: Float = 0f
+
+    private var attachedRecyclerView: RecyclerView? = null
+    private var hostActive: Boolean = true
+    private var playbackActive: Boolean = false
+    private var lyricsModeActive: Boolean = false
+    private var lastPlaybackPositionMs: Long = 0L
+    private var lastPlaybackAnchorNanos: Long = 0L
+    private var lastFrameNanos: Long = 0L
+    private var choreographerRunning: Boolean = false
+    private var pendingScrollTargetPosition: Int = -1
+    private var pendingScrollDeltaPx: Float = 0f
+
+    private val frameCallback = object : Choreographer.FrameCallback {
+        override fun doFrame(frameTimeNanos: Long) {
+            val rv = attachedRecyclerView
+            if (rv == null || !hostActive) {
+                choreographerRunning = false
+                lastFrameNanos = 0L
+                return
+            }
+
+            val dtSec = if (lastFrameNanos == 0L) {
+                1f / 60f
+            } else {
+                ((frameTimeNanos - lastFrameNanos).coerceIn(1_000_000L, 32_000_000L)) / 1_000_000_000f
+            }
+            lastFrameNanos = frameTimeNanos
+
+            val scrollDelta = stepSpringScroll(dtSec)
+            if (scrollDelta != 0) {
+                rv.scrollBy(0, scrollDelta)
+            }
+            if (!scrollSpringActive && pendingScrollTargetPosition in lines.indices) {
+                val lm = rv.layoutManager as? LinearLayoutManager
+                val finalView = lm?.findViewByPosition(pendingScrollTargetPosition)
+                if (finalView != null) {
+                    val drift = finalView.top - rv.paddingTop
+                    if (drift != 0) {
+                        rv.scrollBy(0, drift)
+                    }
+                }
+                pendingScrollTargetPosition = -1
+            }
+
+            val reducedMotion = SpringAnimatorHelper.isReducedMotionEnabled(rv.context)
+            var needsMoreFrames = scrollSpringActive
+            val sweepPosMs = computeInterpolatedPlaybackPosMs(frameTimeNanos)
+
+            for (i in 0 until rv.childCount) {
+                val child = rv.getChildAt(i)
+                val holder = rv.getChildViewHolder(child) as? LyricViewHolder ?: continue
+                val pos = holder.bindingAdapterPosition
+
+                if (holder.focusActive) {
+                    holder.focusSolver.target = holder.targetFocus
+                    holder.focusSolver.stiffness = LyricMotionSpec.SPRING_STIFFNESS
+                    holder.focusSolver.dampingRatio = LyricMotionSpec.SPRING_DAMPING_RATIO
+                    val settled = holder.focusSolver.step(dtSec)
+                    applyFocusVisuals(holder, pos, holder.focusSolver.value)
+                    if (settled) {
+                        holder.focusActive = false
+                    } else {
+                        needsMoreFrames = true
+                    }
+                }
+
+                if (holder.microLagDelaySec > 0f) {
+                    holder.microLagDelaySec = (holder.microLagDelaySec - dtSec).coerceAtLeast(0f)
+                    needsMoreFrames = true
+                } else if (holder.microLagActive) {
+                    val settledLag = holder.microLagSolver.step(dtSec)
+                    holder.rowView.translationY = holder.microLagSolver.value
+                    if (settledLag) {
+                        holder.rowView.translationY = 0f
+                        holder.microLagActive = false
+                    } else {
+                        needsMoreFrames = true
+                    }
+                }
+
+                if (holder.rowView.tapGlowAlpha > 0f) {
+                    val nextGlow = (holder.rowView.tapGlowAlpha - dtSec * 3.8f).coerceAtLeast(0f)
+                    holder.rowView.updateTapGlow(nextGlow)
+                    if (nextGlow > 0f) needsMoreFrames = true
+                }
+
+                if (synced && !selectionMode && pos == activeIndex && pos in lines.indices && LyricMotionSpec.WORD_SWEEP_ENABLED) {
+                    val line = lines[pos]
+                    val nextLineTs = lines.getOrNull(pos + 1)?.timestampMs ?: (line.timestampMs + 3_200L)
+                    val charProgress = LyricMotionMath.computeSweepCharProgress(
+                        textLength = holder.mainText.length(),
+                        words = line.words,
+                        lineStartMs = line.timestampMs,
+                        lineEndMs = nextLineTs,
+                        positionMs = sweepPosMs,
+                        sweepEnabled = !reducedMotion
+                    )
+                    holder.mainText.setSweepProgress(active = true, charProgress = charProgress)
+                } else {
+                    holder.mainText.setSweepProgress(active = false, charProgress = 0f)
+                }
+            }
+
+            if (shouldKeepWordSweepRunning(reducedMotion)) {
+                needsMoreFrames = true
+            }
+
+            if (needsMoreFrames && hostActive) {
+                Choreographer.getInstance().postFrameCallback(this)
+            } else {
+                choreographerRunning = false
+                lastFrameNanos = 0L
+            }
+        }
+    }
 
     private val selectedIndices = LinkedHashSet<Int>()
     private var selectionMode: Boolean = false
+
+    fun setHostActive(active: Boolean) {
+        hostActive = active
+        if (!active) {
+            stopChoreographer()
+        } else {
+            ensureChoreographerIfNeeded()
+        }
+    }
+
+    fun setPlaybackActive(playing: Boolean) {
+        playbackActive = playing
+        if (playing) {
+            lastPlaybackAnchorNanos = System.nanoTime()
+            ensureChoreographerIfNeeded()
+        } else {
+            lastPlaybackAnchorNanos = 0L
+        }
+    }
+
+    fun setLyricsModeActive(active: Boolean) {
+        lyricsModeActive = active
+        if (active) {
+            lastPlaybackAnchorNanos = System.nanoTime()
+            ensureChoreographerIfNeeded()
+        }
+    }
+
+    fun updatePlaybackPosition(positionMs: Long) {
+        lastPlaybackPositionMs = positionMs.coerceAtLeast(0L)
+        lastPlaybackAnchorNanos = System.nanoTime()
+        if (lyricsModeActive && synced && activeIndex in lines.indices) {
+            val rv = attachedRecyclerView
+            if (rv != null && !playbackActive) {
+                val lm = rv.layoutManager as? LinearLayoutManager
+                val view = lm?.findViewByPosition(activeIndex)
+                val holder = view?.let { rv.getChildViewHolder(it) as? LyricViewHolder }
+                if (holder != null) {
+                    val line = lines[activeIndex]
+                    val nextTs = lines.getOrNull(activeIndex + 1)?.timestampMs ?: (line.timestampMs + 3_200L)
+                    val charProgress = LyricMotionMath.computeSweepCharProgress(
+                        textLength = holder.mainText.length(),
+                        words = line.words,
+                        lineStartMs = line.timestampMs,
+                        lineEndMs = nextTs,
+                        positionMs = lastPlaybackPositionMs,
+                        sweepEnabled = LyricMotionSpec.WORD_SWEEP_ENABLED
+                    )
+                    holder.mainText.setSweepProgress(active = true, charProgress = charProgress)
+                }
+            }
+            ensureChoreographerIfNeeded()
+        }
+    }
+
+    fun startSpringScrollTarget(deltaPx: Float) {
+        if (deltaPx == 0f) {
+            scrollSpringSolver.value = 0f
+            scrollSpringSolver.target = 0f
+            scrollSpringSolver.velocity = 0f
+            lastScrollSolverValue = 0f
+            subPixelRemainder = 0f
+            subPixelAccumulator.reset()
+            scrollSpringActive = false
+            return
+        }
+        val start = if (scrollSpringActive) scrollSpringSolver.value else 0f
+        if (!scrollSpringActive) {
+            lastScrollSolverValue = 0f
+            subPixelRemainder = 0f
+            subPixelAccumulator.reset()
+        }
+        scrollSpringSolver.value = start
+        scrollSpringSolver.target = lastScrollSolverValue - subPixelRemainder + deltaPx
+        scrollSpringSolver.stiffness = LyricMotionSpec.SPRING_STIFFNESS
+        scrollSpringSolver.dampingRatio = LyricMotionSpec.SPRING_DAMPING_RATIO
+        scrollSpringSolver.valueThreshold = 0.05f
+        scrollSpringSolver.velocityThreshold = 0.5f
+        scrollSpringActive = true
+    }
+
+    fun stepSpringScroll(dtSec: Float): Int {
+        if (!scrollSpringActive) return 0
+        val settled = scrollSpringSolver.step(dtSec)
+        val floatDelta = scrollSpringSolver.value - lastScrollSolverValue
+        lastScrollSolverValue = scrollSpringSolver.value
+        subPixelAccumulator.subPixelRemainder = subPixelRemainder
+        var intDelta = subPixelAccumulator.accumulate(floatDelta)
+        subPixelRemainder = subPixelAccumulator.subPixelRemainder
+        if (settled) {
+            intDelta += subPixelAccumulator.flushRemainder()
+            subPixelRemainder = subPixelAccumulator.subPixelRemainder
+            scrollSpringActive = false
+            lastScrollSolverValue = 0f
+            scrollSpringSolver.value = 0f
+            scrollSpringSolver.target = 0f
+            scrollSpringSolver.velocity = 0f
+        }
+        return intDelta
+    }
+
+    fun isScrollSpringActive(): Boolean = scrollSpringActive
+
+    private fun computeInterpolatedPlaybackPosMs(frameTimeNanos: Long): Long {
+        if (!playbackActive || lastPlaybackAnchorNanos <= 0L) return lastPlaybackPositionMs
+        val deltaMs = ((frameTimeNanos - lastPlaybackAnchorNanos).coerceIn(0L, 450_000_000L)) / 1_000_000L
+        return lastPlaybackPositionMs + deltaMs
+    }
+
+    private fun shouldKeepWordSweepRunning(reducedMotion: Boolean): Boolean {
+        return !reducedMotion &&
+            hostActive &&
+            playbackActive &&
+            lyricsModeActive &&
+            synced &&
+            !selectionMode &&
+            LyricMotionSpec.WORD_SWEEP_ENABLED &&
+            activeIndex in lines.indices
+    }
+
+    private fun ensureChoreographerIfNeeded() {
+        val rv = attachedRecyclerView ?: return
+        if (!hostActive || choreographerRunning) return
+        val reducedMotion = SpringAnimatorHelper.isReducedMotionEnabled(rv.context)
+        var anyActive = scrollSpringActive || shouldKeepWordSweepRunning(reducedMotion)
+        if (!anyActive) {
+            for (i in 0 until rv.childCount) {
+                val holder = rv.getChildViewHolder(rv.getChildAt(i)) as? LyricViewHolder ?: continue
+                if (holder.focusActive || holder.microLagActive || holder.microLagDelaySec > 0f || holder.rowView.tapGlowAlpha > 0f) {
+                    anyActive = true
+                    break
+                }
+            }
+        }
+        if (anyActive) {
+            choreographerRunning = true
+            lastFrameNanos = 0L
+            Choreographer.getInstance().postFrameCallback(frameCallback)
+        }
+    }
+
+    private fun stopChoreographer() {
+        if (choreographerRunning) {
+            runCatching { Choreographer.getInstance().removeFrameCallback(frameCallback) }
+            choreographerRunning = false
+            lastFrameNanos = 0L
+        }
+    }
+
+    override fun onAttachedToRecyclerView(recyclerView: RecyclerView) {
+        super.onAttachedToRecyclerView(recyclerView)
+        attachedRecyclerView = recyclerView
+        ensureChoreographerIfNeeded()
+    }
+
+    override fun onDetachedFromRecyclerView(recyclerView: RecyclerView) {
+        stopChoreographer()
+        if (attachedRecyclerView === recyclerView) {
+            attachedRecyclerView = null
+        }
+        super.onDetachedFromRecyclerView(recyclerView)
+    }
 
     fun setPalette(palette: CoverPalette) {
         setAccentColor(palette.accentGlow)
@@ -223,8 +598,12 @@ class LyricsRecyclerAdapter(
         lines = parsed.lines
         synced = parsed.isSynced
         activeIndex = -1
+        pendingScrollTargetPosition = -1
+        pendingScrollDeltaPx = 0f
         subPixelAccumulator.reset()
-        lastSpringScrollValue = 0f
+        subPixelRemainder = 0f
+        scrollSpringActive = false
+        lastScrollSolverValue = 0f
         selectedIndices.clear()
         selectionMode = false
         onSelectionChanged?.invoke(emptyList())
@@ -235,8 +614,12 @@ class LyricsRecyclerAdapter(
         lines = emptyList()
         synced = false
         activeIndex = -1
+        pendingScrollTargetPosition = -1
+        pendingScrollDeltaPx = 0f
         subPixelAccumulator.reset()
-        lastSpringScrollValue = 0f
+        subPixelRemainder = 0f
+        scrollSpringActive = false
+        lastScrollSolverValue = 0f
         selectedIndices.clear()
         selectionMode = false
         onSelectionChanged?.invoke(emptyList())
@@ -275,8 +658,21 @@ class LyricsRecyclerAdapter(
 
     fun cancelScrollAnimation(recyclerView: RecyclerView) {
         SpringAnimatorHelper.cancelSpring(recyclerView, CHANNEL_SCROLL)
+        scrollSpringActive = false
+        pendingScrollTargetPosition = -1
+        pendingScrollDeltaPx = 0f
+        lastScrollSolverValue = 0f
+        scrollSpringSolver.value = 0f
+        scrollSpringSolver.target = 0f
+        scrollSpringSolver.velocity = 0f
         subPixelAccumulator.reset()
-        lastSpringScrollValue = 0f
+        subPixelRemainder = 0f
+        for (i in 0 until recyclerView.childCount) {
+            val holder = recyclerView.getChildViewHolder(recyclerView.getChildAt(i)) as? LyricViewHolder ?: continue
+            holder.microLagActive = false
+            holder.microLagDelaySec = 0f
+            holder.rowView.translationY = 0f
+        }
     }
 
     fun snapToInitialAnchor(recyclerView: RecyclerView) {
@@ -298,24 +694,54 @@ class LyricsRecyclerAdapter(
         val clamped = if (newIndex in lines.indices) newIndex else -1
         if (clamped == activeIndex) return
 
+        val prevIndex = activeIndex
         activeIndex = clamped
 
-        if (recyclerView != null) {
-            updateVisibleHoldersInPlace(recyclerView, animateFocus = true)
+        if (recyclerView != null && autoScroll && clamped in lines.indices) {
+            scrollToActiveLine(recyclerView, clamped, animated = true)
         }
 
-        if (autoScroll && clamped in lines.indices && recyclerView != null) {
-            scrollToActiveLine(recyclerView, clamped, animated = true)
+        if (recyclerView != null) {
+            updateVisibleHoldersInPlace(
+                recyclerView = recyclerView,
+                animateFocus = true,
+                applyMicroLagWave = autoScroll && prevIndex >= 0 && clamped > prevIndex
+            )
+            ensureChoreographerIfNeeded()
         }
     }
 
-    private fun updateVisibleHoldersInPlace(recyclerView: RecyclerView, animateFocus: Boolean) {
+    private fun updateVisibleHoldersInPlace(
+        recyclerView: RecyclerView,
+        animateFocus: Boolean,
+        applyMicroLagWave: Boolean = false
+    ) {
+        val density = recyclerView.resources.displayMetrics.density
+        val reducedMotion = SpringAnimatorHelper.isReducedMotionEnabled(recyclerView.context)
+        val scrollDeltaForLag = pendingScrollDeltaPx
         for (i in 0 until recyclerView.childCount) {
             val child = recyclerView.getChildAt(i)
             val holder = recyclerView.getChildViewHolder(child) as? LyricViewHolder ?: continue
             val pos = holder.bindingAdapterPosition
             if (pos in lines.indices) {
                 bindVisualState(holder, pos, animateFocus = animateFocus)
+                if (applyMicroLagWave && !reducedMotion && pos > activeIndex && scrollDeltaForLag > 0f) {
+                    val lagPx = LyricMotionMath.computeInitialMicroLagY(
+                        rowIndex = pos,
+                        activeIndex = activeIndex,
+                        scrollDeltaPx = scrollDeltaForLag,
+                        density = density,
+                        reducedMotion = false
+                    )
+                    if (lagPx > 0.5f) {
+                        holder.microLagDelaySec = LyricMotionMath.computeStaggerDelayMs(pos, activeIndex) / 1000f
+                        holder.microLagSolver.value = lagPx
+                        holder.microLagSolver.target = 0f
+                        holder.microLagSolver.velocity = 0f
+                        holder.microLagActive = true
+                        holder.rowView.translationY = lagPx
+                    }
+                }
             }
         }
     }
@@ -360,46 +786,10 @@ class LyricsRecyclerAdapter(
             return
         }
 
-        val currentSpringVal = SpringAnimatorHelper.getSpringValue(recyclerView, CHANNEL_SCROLL)
-        val startVal = currentSpringVal ?: 0f
-        if (currentSpringVal == null) {
-            subPixelAccumulator.reset()
-            lastSpringScrollValue = 0f
-        }
-        val targetVal = startVal + remainingDy.toFloat()
-
-        SpringAnimatorHelper.animateSpring(
-            key = recyclerView,
-            start = startVal,
-            target = targetVal,
-            stiffness = LyricMotionMath.LYRIC_SCROLL_STIFFNESS,
-            dampingRatio = LyricMotionMath.LYRIC_SCROLL_DAMPING_RATIO,
-            valueThreshold = 0.05f,
-            channel = CHANNEL_SCROLL,
-            onUpdate = { v ->
-                val floatDelta = v - lastSpringScrollValue
-                lastSpringScrollValue = v
-                val intDelta = subPixelAccumulator.accumulate(floatDelta)
-                if (intDelta != 0) {
-                    recyclerView.scrollBy(0, intDelta)
-                }
-            },
-            onEnd = {
-                val rem = subPixelAccumulator.flushRemainder()
-                if (rem != 0) {
-                    recyclerView.scrollBy(0, rem)
-                }
-                val finalView = layoutManager.findViewByPosition(position)
-                if (finalView != null) {
-                    val drift = finalView.top - recyclerView.paddingTop
-                    if (drift != 0) {
-                        recyclerView.scrollBy(0, drift)
-                    }
-                }
-                subPixelAccumulator.reset()
-                lastSpringScrollValue = 0f
-            }
-        )
+        pendingScrollTargetPosition = position
+        pendingScrollDeltaPx = remainingDy.toFloat()
+        startSpringScrollTarget(remainingDy.toFloat())
+        ensureChoreographerIfNeeded()
     }
 
     override fun getItemCount(): Int = lines.size
@@ -409,7 +799,7 @@ class LyricsRecyclerAdapter(
         val hPad = (24f * density).toInt()
         val vPad = (10f * density).toInt()
 
-        val row = LinearLayout(parent.context).apply {
+        val row = LyricRowLayout(parent.context).apply {
             orientation = LinearLayout.VERTICAL
             layoutParams = RecyclerView.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -421,7 +811,7 @@ class LyricsRecyclerAdapter(
             pivotX = hPad.toFloat()
         }
 
-        val mainTv = TextView(parent.context).apply {
+        val mainTv = SweepLyricTextView(parent.context).apply {
             maxLines = Int.MAX_VALUE
             ellipsize = null
             setTextSize(TypedValue.COMPLEX_UNIT_SP, SIZE_PRIMARY_SP)
@@ -459,6 +849,10 @@ class LyricsRecyclerAdapter(
                 if (synced) {
                     view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
                 }
+                if (!SpringAnimatorHelper.isReducedMotionEnabled(view.context)) {
+                    row.triggerTapIllumination()
+                    ensureChoreographerIfNeeded()
+                }
                 onLineTap(lines[pos], pos)
             }
         }
@@ -490,6 +884,11 @@ class LyricsRecyclerAdapter(
     override fun onBindViewHolder(holder: LyricViewHolder, position: Int) {
         val line = lines[position]
         holder.mainText.text = line.primaryText.ifBlank { "\u266A" }
+        holder.mainText.setSweepProgress(active = false, charProgress = 0f)
+        holder.microLagActive = false
+        holder.microLagDelaySec = 0f
+        holder.rowView.translationY = 0f
+        holder.rowView.updateTapGlow(0f)
 
         val rom = line.romanizedText
         if (rom.isNullOrBlank()) {
@@ -522,7 +921,12 @@ class LyricsRecyclerAdapter(
     }
 
     override fun onViewRecycled(holder: LyricViewHolder) {
-        SpringAnimatorHelper.cancelSpring(holder.rowView, CHANNEL_FOCUS)
+        holder.focusActive = false
+        holder.microLagActive = false
+        holder.microLagDelaySec = 0f
+        holder.rowView.translationY = 0f
+        holder.rowView.updateTapGlow(0f)
+        holder.mainText.setSweepProgress(active = false, charProgress = 0f)
         super.onViewRecycled(holder)
     }
 
@@ -561,20 +965,21 @@ class LyricsRecyclerAdapter(
         holder.focusedMainColor = focusedMainColor
 
         val targetFocus = if (isFocused) 1f else 0f
+        holder.targetFocus = targetFocus
         if (animateFocus && !SpringAnimatorHelper.isReducedMotionEnabled(row.context)) {
-            SpringAnimatorHelper.animateSpring(
-                key = row,
-                start = holder.focusProgress,
-                target = targetFocus,
-                stiffness = LyricMotionMath.LYRIC_SCROLL_STIFFNESS,
-                dampingRatio = LyricMotionMath.LYRIC_SCROLL_DAMPING_RATIO,
-                channel = CHANNEL_FOCUS,
-                onUpdate = { p ->
-                    applyFocusVisuals(holder, position, p)
-                }
-            )
+            holder.focusSolver.value = holder.focusProgress
+            holder.focusSolver.target = targetFocus
+            holder.focusSolver.stiffness = LyricMotionSpec.SPRING_STIFFNESS
+            holder.focusSolver.dampingRatio = LyricMotionSpec.SPRING_DAMPING_RATIO
+            holder.focusActive = !holder.focusSolver.isSettled()
+            if (!holder.focusActive) {
+                applyFocusVisuals(holder, position, targetFocus)
+            }
         } else {
-            SpringAnimatorHelper.cancelSpring(row, CHANNEL_FOCUS)
+            holder.focusActive = false
+            holder.focusSolver.value = targetFocus
+            holder.focusSolver.target = targetFocus
+            holder.focusSolver.velocity = 0f
             applyFocusVisuals(holder, position, targetFocus)
         }
     }
@@ -582,7 +987,7 @@ class LyricsRecyclerAdapter(
     private fun applyFocusVisuals(holder: LyricViewHolder, position: Int, focusProgress: Float) {
         val row = holder.rowView
         val clamped = focusProgress.coerceIn(0f, 1f)
-        holder.focusProgress = focusProgress
+        holder.focusProgress = clamped
         row.pivotX = row.paddingLeft.toFloat()
         if (row.height > 0) {
             row.pivotY = row.height * 0.5f
@@ -609,14 +1014,166 @@ class LyricsRecyclerAdapter(
         }
     }
 
+    class LyricRowLayout(context: Context) : LinearLayout(context) {
+        var lastTouchX: Float = 0f
+        var lastTouchY: Float = 0f
+        var tapGlowAlpha: Float = 0f
+            private set
+
+        private val tapPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val tapMatrix = Matrix()
+
+        override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
+            if (ev.actionMasked == MotionEvent.ACTION_DOWN) {
+                lastTouchX = ev.x
+                lastTouchY = ev.y
+            }
+            return false
+        }
+
+        fun triggerTapIllumination() {
+            if (lastTouchX <= 0f && lastTouchY <= 0f && width > 0) {
+                lastTouchX = width * 0.25f
+                lastTouchY = height * 0.5f
+            }
+            tapGlowAlpha = 1f
+            invalidate()
+        }
+
+        fun updateTapGlow(alpha: Float) {
+            val clamped = alpha.coerceIn(0f, 1f)
+            if (tapGlowAlpha != clamped) {
+                tapGlowAlpha = clamped
+                invalidate()
+            }
+        }
+
+        override fun dispatchDraw(canvas: Canvas) {
+            super.dispatchDraw(canvas)
+            val a = tapGlowAlpha
+            if (a <= 0.005f || width <= 0 || height <= 0) return
+            val radius = (width * 0.42f).coerceAtLeast(120f)
+            tapMatrix.setScale(radius, radius)
+            tapMatrix.postTranslate(lastTouchX, lastTouchY)
+            TAP_GLOW_SHADER.setLocalMatrix(tapMatrix)
+            tapPaint.shader = TAP_GLOW_SHADER
+            tapPaint.alpha = (a * 96f).roundToInt().coerceIn(0, 255)
+            canvas.drawCircle(lastTouchX, lastTouchY, radius, tapPaint)
+        }
+    }
+
+    class SweepLyricTextView(context: Context) : TextView(context) {
+        private var sweepActive: Boolean = false
+        private var sweepCharProgress: Float = 0f
+        private val featherWidthPx: Float = 28f * resources.displayMetrics.density
+        private val sweepMatrix = Matrix()
+        private val sweepShader = LinearGradient(
+            0f,
+            0f,
+            1f,
+            0f,
+            intArrayOf(COLOR_ACTIVE, COLOR_ACTIVE, 0x00FFFFFF),
+            floatArrayOf(0f, 0.55f, 1f),
+            Shader.TileMode.CLAMP
+        )
+
+        fun setSweepProgress(active: Boolean, charProgress: Float) {
+            val normalized = charProgress.coerceAtLeast(0f)
+            if (sweepActive == active && abs(sweepCharProgress - normalized) < 0.02f) return
+            sweepActive = active
+            sweepCharProgress = normalized
+            invalidate()
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            val textLayout = layout
+            val textLen = text?.length ?: 0
+            if (!sweepActive || !LyricMotionSpec.WORD_SWEEP_ENABLED || textLayout == null || textLen <= 0) {
+                if (paint.shader != null) {
+                    paint.shader = null
+                }
+                super.onDraw(canvas)
+                return
+            }
+
+            val tp = paint
+            val prevColor = tp.color
+            val prevShader = tp.shader
+            val dx = compoundPaddingLeft.toFloat()
+            val dy = extendedPaddingTop.toFloat()
+            val contentWidth = (width - compoundPaddingLeft - compoundPaddingRight).coerceAtLeast(1).toFloat()
+
+            val rootSave = canvas.save()
+            canvas.translate(dx, dy)
+
+            tp.shader = null
+            tp.color = COLOR_SWEEP_BASE
+            textLayout.draw(canvas)
+
+            val progress = sweepCharProgress.coerceIn(0f, textLen.toFloat())
+            val lineCount = textLayout.lineCount
+            for (lineIdx in 0 until lineCount) {
+                val lineStart = textLayout.getLineStart(lineIdx)
+                val lineEnd = textLayout.getLineVisibleEnd(lineIdx)
+                if (progress <= lineStart.toFloat()) break
+
+                val lineTop = textLayout.getLineTop(lineIdx).toFloat()
+                val lineBottom = textLayout.getLineBottom(lineIdx).toFloat()
+                val lineSave = canvas.save()
+                canvas.clipRect(0f, lineTop, contentWidth, lineBottom)
+
+                if (progress >= lineEnd.toFloat()) {
+                    tp.shader = null
+                    tp.color = COLOR_ACTIVE
+                    textLayout.draw(canvas)
+                } else {
+                    val idxFloor = progress.toInt().coerceIn(lineStart, (lineEnd - 1).coerceAtLeast(lineStart))
+                    val frac = (progress - idxFloor).coerceIn(0f, 1f)
+                    val x0 = textLayout.getPrimaryHorizontal(idxFloor)
+                    val x1 = if (idxFloor + 1 <= lineEnd) {
+                        textLayout.getPrimaryHorizontal(idxFloor + 1)
+                    } else {
+                        textLayout.getLineRight(lineIdx)
+                    }
+                    val headX = (x0 + (x1 - x0) * frac).coerceAtLeast(0f)
+                    sweepMatrix.setScale(featherWidthPx, 1f)
+                    sweepMatrix.postTranslate(headX - featherWidthPx * 0.55f, 0f)
+                    sweepShader.setLocalMatrix(sweepMatrix)
+                    tp.color = COLOR_ACTIVE
+                    tp.shader = sweepShader
+                    textLayout.draw(canvas)
+                }
+                canvas.restoreToCount(lineSave)
+            }
+
+            tp.shader = prevShader
+            tp.color = prevColor
+            canvas.restoreToCount(rootSave)
+        }
+    }
+
     class LyricViewHolder(
-        val rowView: LinearLayout,
-        val mainText: TextView,
+        val rowView: LyricRowLayout,
+        val mainText: SweepLyricTextView,
         val romanizedText: TextView,
         val subText: TextView
     ) : RecyclerView.ViewHolder(rowView) {
         var appliedBlurIndex: Int = -1
         var focusProgress: Float = 0f
+        var targetFocus: Float = 0f
+        var focusActive: Boolean = false
+        val focusSolver = SpringAnimatorHelper.SpringSolver(
+            stiffness = LyricMotionSpec.SPRING_STIFFNESS,
+            dampingRatio = LyricMotionSpec.SPRING_DAMPING_RATIO
+        )
+        var microLagDelaySec: Float = 0f
+        var microLagActive: Boolean = false
+        val microLagSolver = SpringAnimatorHelper.SpringSolver(
+            stiffness = LyricMotionSpec.SPRING_STIFFNESS,
+            dampingRatio = LyricMotionSpec.SPRING_DAMPING_RATIO,
+            valueThreshold = 0.2f,
+            velocityThreshold = 2f
+        )
         var unfocusedMainColor: Int = COLOR_UPCOMING
         var focusedMainColor: Int = COLOR_ACTIVE
     }
@@ -625,7 +1182,6 @@ class LyricsRecyclerAdapter(
         private const val PAYLOAD_STATE = 1
         private const val MAX_SELECTED_QUOTE_LINES = 4
         private const val CHANNEL_SCROLL = 10
-        private const val CHANNEL_FOCUS = 11
 
         internal const val SCROLL_DURATION_MS = SpringAnimatorHelper.LYRIC_SCROLL_DURATION_MS
         internal const val SCALE_ANIM_MS = SpringAnimatorHelper.LYRIC_SCALE_DURATION_MS
@@ -635,6 +1191,7 @@ class LyricsRecyclerAdapter(
         private const val SIZE_TRANSLATION_SP = 14f
 
         private const val COLOR_ACTIVE = 0xFFFFFFFF.toInt()
+        private const val COLOR_SWEEP_BASE = 0x8CFFFFFF.toInt()
         private const val COLOR_UPCOMING = 0xCCFFFFFF.toInt()
         private const val COLOR_PAST = 0x99FFFFFF.toInt()
         private const val COLOR_STATIC = 0xE6FFFFFF.toInt()
@@ -643,6 +1200,17 @@ class LyricsRecyclerAdapter(
 
         private val TYPEFACE_BOLD: Typeface? by lazy { Typeface.create("sans-serif", Typeface.BOLD) }
         private val TYPEFACE_MEDIUM: Typeface? by lazy { Typeface.create("sans-serif-medium", Typeface.NORMAL) }
+
+        private val TAP_GLOW_SHADER: RadialGradient by lazy {
+            RadialGradient(
+                0f,
+                0f,
+                1f,
+                intArrayOf(0x55FFFFFF, 0x22FFFFFF, 0x00FFFFFF),
+                floatArrayOf(0f, 0.45f, 1f),
+                Shader.TileMode.CLAMP
+            )
+        }
 
         private val BLUR_POOL: Array<RenderEffect?> = Array(LyricMotionMath.BLUR_RADII.size) { idx ->
             val r = LyricMotionMath.BLUR_RADII[idx]
