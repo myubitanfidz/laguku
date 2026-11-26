@@ -181,6 +181,112 @@ class NowPlayingView(
         }
     }
 
+    /**
+     * Stateful release-commit controller for center artwork/vinyl horizontal swipe.
+     * Moves [translationX] with rubber-band damping during ACTION_MOVE and evaluates
+     * track navigation exclusively on ACTION_UP (or resets cleanly on ACTION_CANCEL).
+     * Zero object allocations per frame.
+     */
+    class HorizontalSwipeCommitController {
+        enum class GestureState { IDLE, HORIZONTAL_DRAG, VERTICAL_COLLAPSE }
+
+        var state: GestureState = GestureState.IDLE
+            private set
+        var translationX: Float = 0f
+            private set
+        var committedDirection: Int = 0
+            private set
+
+        private var downX: Float = 0f
+        private var downY: Float = 0f
+        private var lastX: Float = 0f
+        private var lastTimeMs: Long = 0L
+        private var velocityX: Float = 0f
+
+        fun onDown(x: Float, y: Float, nowMs: Long) {
+            state = GestureState.IDLE
+            translationX = 0f
+            committedDirection = 0
+            downX = x
+            downY = y
+            lastX = x
+            lastTimeMs = nowMs
+            velocityX = 0f
+        }
+
+        fun onMove(
+            x: Float,
+            y: Float,
+            nowMs: Long,
+            touchSlopPx: Float,
+            swipeThresholdPx: Float,
+            maxOffsetPx: Float
+        ): Boolean {
+            if (state == GestureState.VERTICAL_COLLAPSE) return false
+            val dx = x - downX
+            val dy = y - downY
+
+            if (state == GestureState.IDLE) {
+                if (dy > touchSlopPx * 5f && dy > abs(dx) * 1.4f) {
+                    state = GestureState.VERTICAL_COLLAPSE
+                    translationX = 0f
+                    return true
+                }
+                if (abs(dx) > touchSlopPx && abs(dx) > abs(dy) * 1.2f) {
+                    state = GestureState.HORIZONTAL_DRAG
+                }
+            }
+
+            if (state == GestureState.HORIZONTAL_DRAG) {
+                val dtSec = (nowMs - lastTimeMs).coerceAtLeast(1L) / 1000f
+                velocityX = (x - lastX) / dtSec
+                lastX = x
+                lastTimeMs = nowMs
+                translationX = PlayDragMath.computeRubberBandOffset(dx, swipeThresholdPx, maxOffsetPx)
+            }
+            return false
+        }
+
+        fun onRelease(
+            x: Float,
+            isCancel: Boolean,
+            swipeThresholdPx: Float,
+            flingVelocityPxPerSec: Float = FLING_VELOCITY_THRESHOLD_PX_SEC
+        ): Int {
+            val wasDrag = state == GestureState.HORIZONTAL_DRAG
+            val dir = if (!isCancel && wasDrag) {
+                resolveReleaseDirection(x - downX, velocityX, swipeThresholdPx, flingVelocityPxPerSec)
+            } else {
+                0
+            }
+            committedDirection = dir
+            state = GestureState.IDLE
+            translationX = 0f
+            return dir
+        }
+
+        companion object {
+            const val SWIPE_THRESHOLD_DP = 56f
+            const val MAX_SWIPE_OFFSET_DP = 76f
+            const val FLING_VELOCITY_THRESHOLD_PX_SEC = 650f
+
+            fun resolveReleaseDirection(
+                finalDxPx: Float,
+                velocityXPxPerSec: Float,
+                thresholdPx: Float,
+                flingVelocityPxPerSec: Float = FLING_VELOCITY_THRESHOLD_PX_SEC
+            ): Int {
+                if (finalDxPx <= -thresholdPx) return 1
+                if (finalDxPx >= thresholdPx) return -1
+                if (abs(finalDxPx) >= thresholdPx * 0.45f && finalDxPx * velocityXPxPerSec > 0f) {
+                    if (velocityXPxPerSec <= -flingVelocityPxPerSec) return 1
+                    if (velocityXPxPerSec >= flingVelocityPxPerSec) return -1
+                }
+                return 0
+            }
+        }
+    }
+
     class LyricTunerState(initialExpanded: Boolean = false) {
         var isExpanded: Boolean = initialExpanded
             private set
@@ -633,6 +739,9 @@ class NowPlayingView(
     private val playLoupeController = PlayLoupeController()
     private val playDragThresholdPx: Float = PlayDragMath.DRAG_THRESHOLD_DP * density
     private val playDragMaxOffsetPx: Float = PlayDragMath.MAX_OFFSET_DP * density
+    private val coverSwipeController = HorizontalSwipeCommitController()
+    private val coverSwipeThresholdPx: Float = HorizontalSwipeCommitController.SWIPE_THRESHOLD_DP * density
+    private val coverSwipeMaxOffsetPx: Float = HorizontalSwipeCommitController.MAX_SWIPE_OFFSET_DP * density
 
     private var topInsetPx: Int = 0
     private var bottomInsetPx: Int = 0
@@ -776,20 +885,6 @@ class NowPlayingView(
         resumeLyricsAutoScroll(scrollNow = true)
     }
 
-    private val playDwellRunnable = Runnable {
-        val dir = playLoupeController.onDwellTimeout(SystemClock.elapsedRealtime())
-        if (dir != 0) {
-            playPauseGlass.setSpecularIntensity(1f)
-            val haptic = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                HapticFeedbackConstants.CONFIRM
-            } else {
-                HapticFeedbackConstants.LONG_PRESS
-            }
-            playLoupeView.performHapticFeedback(haptic)
-            triggerTrackNavigation(dir)
-        }
-    }
-
     private val sleepDisplayTicker = object : Runnable {
         override fun run() {
             if (sleepTimerEndElapsedMs > 0L) {
@@ -851,10 +946,11 @@ class NowPlayingView(
         hostActive = active
         vinylDiscView.setHostActive(active)
         if (!active) {
-            mainHandler.removeCallbacks(playDwellRunnable)
             modeScrubPill.cancelActiveInteractions()
             SpringAnimatorHelper.cancelSpring(playLoupeView)
+            SpringAnimatorHelper.cancelSpring(coverCard, CHANNEL_COVER_DRAG)
             playLoupeView.translationX = 0f
+            coverCard.translationX = 0f
             playLoupeView.scaleX = 1f
             playLoupeView.scaleY = 1f
             playPauseGlass.setMotionState(0f, touchActive = false)
@@ -1315,7 +1411,6 @@ class NowPlayingView(
 
     override fun onDetachedFromWindow() {
         mainHandler.removeCallbacks(autoResumeRunnable)
-        mainHandler.removeCallbacks(playDwellRunnable)
         mainHandler.removeCallbacks(sleepDisplayTicker)
         ambientMeshView.setAnimationActive(false)
         lyricsAdapter.setHostActive(false)
@@ -1324,6 +1419,7 @@ class NowPlayingView(
         SpringAnimatorHelper.cancelSpring(this, CHANNEL_CHROME_MORPH)
         SpringAnimatorHelper.cancelSpring(this, CHANNEL_AMOLED)
         SpringAnimatorHelper.cancelSpring(playLoupeView)
+        SpringAnimatorHelper.cancelSpring(coverCard, CHANNEL_COVER_DRAG)
         SpringAnimatorHelper.cancelSpring(playPauseButton, CHANNEL_PLAY_DRAG)
         SpringAnimatorHelper.cancelSpring(trackArtistView, CHANNEL_ARTIST_SLIDE)
         vinylDiscView.setHostActive(false)
@@ -1489,7 +1585,6 @@ class NowPlayingView(
 
         var downY = 0f
         var downX = 0f
-        var coverSwipeHandled = false
         val attachSwipeCollapse: (View) -> Unit = { target ->
             target.setOnTouchListener { _, event ->
                 when (event.actionMasked) {
@@ -1511,32 +1606,74 @@ class NowPlayingView(
         }
         attachSwipeCollapse(passiveHeader)
         attachSwipeCollapse(lyricsMiniHeader)
-        coverContainer.setOnTouchListener { _, event ->
+        coverContainer.setOnTouchListener { v, event ->
+            val nowMs = SystemClock.elapsedRealtime()
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
-                    downX = event.x
-                    downY = event.y
-                    coverSwipeHandled = false
-                    return@setOnTouchListener true
+                    SpringAnimatorHelper.cancelSpring(coverCard, CHANNEL_COVER_DRAG)
+                    coverSwipeController.onDown(event.rawX, event.rawY, nowMs)
+                    true
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    if (!coverSwipeHandled) {
-                        val dy = event.y - downY
-                        val dx = event.x - downX
-                        if (dy > touchSlop * 5 && dy > abs(dx) * 1.4f) {
-                            coverSwipeHandled = true
-                            onCollapse()
-                            return@setOnTouchListener true
-                        }
-                        if (abs(dx) > touchSlop * 4 && abs(dx) > abs(dy) * 1.4f) {
-                            coverSwipeHandled = true
-                            triggerTrackNavigation(if (dx < 0f) 1 else -1)
-                            return@setOnTouchListener true
-                        }
+                    val prevState = coverSwipeController.state
+                    val collapse = coverSwipeController.onMove(
+                        x = event.rawX,
+                        y = event.rawY,
+                        nowMs = nowMs,
+                        touchSlopPx = touchSlop.toFloat(),
+                        swipeThresholdPx = coverSwipeThresholdPx,
+                        maxOffsetPx = coverSwipeMaxOffsetPx
+                    )
+                    if (collapse) {
+                        coverCard.translationX = 0f
+                        onCollapse()
+                        return@setOnTouchListener true
                     }
+                    if (coverSwipeController.state == HorizontalSwipeCommitController.GestureState.HORIZONTAL_DRAG) {
+                        if (prevState != HorizontalSwipeCommitController.GestureState.HORIZONTAL_DRAG) {
+                            v.parent?.requestDisallowInterceptTouchEvent(true)
+                        }
+                        coverCard.translationX = coverSwipeController.translationX
+                        return@setOnTouchListener true
+                    }
+                    false
                 }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    v.parent?.requestDisallowInterceptTouchEvent(false)
+                    val wasHorizontal = coverSwipeController.state == HorizontalSwipeCommitController.GestureState.HORIZONTAL_DRAG
+                    val isCancel = event.actionMasked == MotionEvent.ACTION_CANCEL
+                    val triggerDir = coverSwipeController.onRelease(
+                        x = event.rawX,
+                        isCancel = isCancel,
+                        swipeThresholdPx = coverSwipeThresholdPx
+                    )
+                    if (wasHorizontal) {
+                        val profile = if (SpringAnimatorHelper.isReducedMotionEnabled(context)) {
+                            SpringAnimatorHelper.SPRING_REDUCED_MOTION
+                        } else {
+                            SpringAnimatorHelper.SPRING_BOUNCY
+                        }
+                        SpringAnimatorHelper.animateSpring(
+                            key = coverCard,
+                            start = coverCard.translationX,
+                            target = 0f,
+                            stiffness = profile.stiffness,
+                            dampingRatio = profile.dampingRatio,
+                            valueThreshold = 0.25f,
+                            channel = CHANNEL_COVER_DRAG,
+                            onUpdate = { tx -> coverCard.translationX = tx }
+                        )
+                    } else {
+                        coverCard.translationX = 0f
+                    }
+                    if (triggerDir != 0) {
+                        v.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                        triggerTrackNavigation(triggerDir)
+                    }
+                    wasHorizontal
+                }
+                else -> false
             }
-            false
         }
     }
 
@@ -2318,7 +2455,6 @@ class NowPlayingView(
                         lastPlayDragTimeMs = nowMs
                         isPlayDragging = false
                         playLoupeController.onTouchDown()
-                        mainHandler.removeCallbacks(playDwellRunnable)
                         SpringAnimatorHelper.cancelSpring(playLoupeView, CHANNEL_PLAY_DRAG)
                         val reduced = SpringAnimatorHelper.isReducedMotionEnabled(context)
                         animatePlayLoupeScale(
@@ -2374,19 +2510,11 @@ class NowPlayingView(
                             if (update.thresholdCrossed) {
                                 v.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
                             }
-                            if (update.cancelDwell) {
-                                mainHandler.removeCallbacks(playDwellRunnable)
-                            }
-                            if (update.scheduleDwell) {
-                                mainHandler.removeCallbacks(playDwellRunnable)
-                                mainHandler.postDelayed(playDwellRunnable, PlayLoupeController.DWELL_DELAY_MS)
-                            }
                         }
                         true
                     }
                     MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                         v.parent?.requestDisallowInterceptTouchEvent(false)
-                        mainHandler.removeCallbacks(playDwellRunnable)
                         val isCancel = event.actionMasked == MotionEvent.ACTION_CANCEL
                         val wasDrag = isPlayDragging
                         isPlayDragging = false
@@ -3628,5 +3756,6 @@ class NowPlayingView(
         const val CHANNEL_AMOLED = 22
         const val CHANNEL_ARTIST_SLIDE = 23
         const val CHANNEL_CHROME_MORPH = 24
+        const val CHANNEL_COVER_DRAG = 25
     }
 }

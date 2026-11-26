@@ -9,15 +9,16 @@ import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Shader
 import android.graphics.SweepGradient
+import android.os.SystemClock
 import android.view.Choreographer
 import android.view.GestureDetector
+import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
 import com.laguku.player.model.CoverPalette
 import com.laguku.player.ui.glass.CoverPaletteExtractor
 import com.laguku.player.ui.motion.SpringAnimatorHelper
-import kotlin.math.abs
 
 /**
  * Authentic spinning vinyl turntable (1 rev / 15s = 24 deg/s) using Choreographer
@@ -103,9 +104,9 @@ class VinylDiscVisualizerView(context: Context) : View(context) {
     private var cachedSpindleRadius = 0f
     private var cachedMaxAvail = 0f
 
-    private var downX = 0f
-    private var downY = 0f
-    private var swipeHandled = false
+    private val swipeController = NowPlayingView.HorizontalSwipeCommitController()
+    private val swipeThresholdPx = NowPlayingView.HorizontalSwipeCommitController.SWIPE_THRESHOLD_DP * density
+    private val maxSwipeOffsetPx = NowPlayingView.HorizontalSwipeCommitController.MAX_SWIPE_OFFSET_DP * density
 
     private val frameCallback = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
@@ -363,28 +364,72 @@ class VinylDiscVisualizerView(context: Context) : View(context) {
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(event: MotionEvent): Boolean {
         gestureDetector.onTouchEvent(event)
+        val nowMs = SystemClock.elapsedRealtime()
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                downX = event.x
-                downY = event.y
-                swipeHandled = false
+                SpringAnimatorHelper.cancelSpring(this, CHANNEL_VINYL_SWIPE)
+                swipeController.onDown(event.rawX, event.rawY, nowMs)
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
-                if (!swipeHandled) {
-                    val dx = event.x - downX
-                    val dy = event.y - downY
-                    if (dy > touchSlop * 5 && dy > abs(dx) * 1.4f) {
-                        swipeHandled = true
-                        onCollapse?.invoke()
-                        return true
-                    }
-                    if (abs(dx) > touchSlop * 4 && abs(dx) > abs(dy) * 1.4f) {
-                        swipeHandled = true
-                        if (dx < 0) onNext?.invoke() else onPrevious?.invoke()
-                        return true
-                    }
+                val prevState = swipeController.state
+                val collapse = swipeController.onMove(
+                    x = event.rawX,
+                    y = event.rawY,
+                    nowMs = nowMs,
+                    touchSlopPx = touchSlop.toFloat(),
+                    swipeThresholdPx = swipeThresholdPx,
+                    maxOffsetPx = maxSwipeOffsetPx
+                )
+                if (collapse) {
+                    translationX = 0f
+                    onCollapse?.invoke()
+                    return true
                 }
+                if (swipeController.state == NowPlayingView.HorizontalSwipeCommitController.GestureState.HORIZONTAL_DRAG) {
+                    if (prevState != NowPlayingView.HorizontalSwipeCommitController.GestureState.HORIZONTAL_DRAG) {
+                        parent?.requestDisallowInterceptTouchEvent(true)
+                    }
+                    translationX = swipeController.translationX
+                    return true
+                }
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                parent?.requestDisallowInterceptTouchEvent(false)
+                val wasHorizontal = swipeController.state == NowPlayingView.HorizontalSwipeCommitController.GestureState.HORIZONTAL_DRAG
+                val isCancel = event.actionMasked == MotionEvent.ACTION_CANCEL
+                val triggerDir = swipeController.onRelease(
+                    x = event.rawX,
+                    isCancel = isCancel,
+                    swipeThresholdPx = swipeThresholdPx
+                )
+                if (wasHorizontal) {
+                    val profile = if (SpringAnimatorHelper.isReducedMotionEnabled(context)) {
+                        SpringAnimatorHelper.SPRING_REDUCED_MOTION
+                    } else {
+                        SpringAnimatorHelper.SPRING_BOUNCY
+                    }
+                    SpringAnimatorHelper.animateSpring(
+                        key = this,
+                        start = translationX,
+                        target = 0f,
+                        stiffness = profile.stiffness,
+                        dampingRatio = profile.dampingRatio,
+                        valueThreshold = 0.25f,
+                        channel = CHANNEL_VINYL_SWIPE,
+                        onUpdate = { tx -> translationX = tx }
+                    )
+                } else {
+                    translationX = 0f
+                }
+                if (triggerDir > 0) {
+                    performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                    onNext?.invoke()
+                } else if (triggerDir < 0) {
+                    performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                    onPrevious?.invoke()
+                }
+                return true
             }
         }
         return super.onTouchEvent(event)
@@ -395,6 +440,7 @@ class VinylDiscVisualizerView(context: Context) : View(context) {
         private const val INERTIA_UP_SECONDS = 0.45f
         private const val INERTIA_DOWN_SECONDS = 0.65f
         private const val GROOVE_COUNT = 16
+        private const val CHANNEL_VINYL_SWIPE = 26
 
         private val SHEEN_COLORS = intArrayOf(
             0x00FFFFFF,

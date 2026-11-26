@@ -505,4 +505,84 @@ class MotionAndInteractiveUiTest {
         assertTrue(d1Half in 0.50f..0.75f)
         assertEquals(1.0f, d2End, 0.001f)
     }
+
+    @Test
+    fun horizontalSwipeCommitController_commitsTrackChangeOnlyOnReleaseAndAllowsCancelByReturningOrActionCancel() {
+        val controller = NowPlayingView.HorizontalSwipeCommitController()
+        val slopPx = 16f
+        val thresholdPx = 150f
+        val maxOffsetPx = 210f
+        var navCount = 0
+        var lastDir = 0
+        val dispatchRelease: (Int) -> Unit = { dir ->
+            if (dir != 0) {
+                navCount++
+                lastDir = dir
+            }
+        }
+
+        // 1. ACTION_MOVE past threshold while finger still held down -> visual translationX updates, 0 track changes
+        controller.onDown(x = 500f, y = 400f, nowMs = 1_000L)
+        assertFalse(controller.onMove(x = 300f, y = 402f, nowMs = 1_040L, touchSlopPx = slopPx, swipeThresholdPx = thresholdPx, maxOffsetPx = maxOffsetPx))
+        assertEquals(NowPlayingView.HorizontalSwipeCommitController.GestureState.HORIZONTAL_DRAG, controller.state)
+        assertTrue("Expected rubber-band negative translationX, got ${controller.translationX}", controller.translationX < 0f)
+        assertEquals(0, controller.committedDirection)
+        assertEquals(0, navCount)
+
+        // 2. Slide back to center before ACTION_UP -> neutral on release, 0 track changes
+        assertFalse(controller.onMove(x = 492f, y = 401f, nowMs = 1_120L, touchSlopPx = slopPx, swipeThresholdPx = thresholdPx, maxOffsetPx = maxOffsetPx))
+        dispatchRelease(controller.onRelease(x = 492f, isCancel = false, swipeThresholdPx = thresholdPx))
+        assertEquals(0, controller.committedDirection)
+        assertEquals(0f, controller.translationX, 0.0001f)
+        assertEquals(0, navCount)
+
+        // 3a. ACTION_UP outside threshold (swipe left -> next (+1) exactly once)
+        controller.onDown(x = 500f, y = 400f, nowMs = 2_000L)
+        controller.onMove(x = 460f, y = 400f, nowMs = 2_020L, touchSlopPx = slopPx, swipeThresholdPx = thresholdPx, maxOffsetPx = maxOffsetPx)
+        controller.onMove(x = 310f, y = 400f, nowMs = 2_080L, touchSlopPx = slopPx, swipeThresholdPx = thresholdPx, maxOffsetPx = maxOffsetPx)
+        assertEquals(0, navCount) // Still held -> 0 changes
+        dispatchRelease(controller.onRelease(x = 310f, isCancel = false, swipeThresholdPx = thresholdPx))
+        assertEquals(1, navCount)
+        assertEquals(1, lastDir)
+        assertEquals(0f, controller.translationX, 0.0001f)
+
+        // 3b. ACTION_UP outside threshold (swipe right -> previous (-1) exactly once)
+        navCount = 0
+        lastDir = 0
+        controller.onDown(x = 500f, y = 400f, nowMs = 3_000L)
+        controller.onMove(x = 690f, y = 400f, nowMs = 3_080L, touchSlopPx = slopPx, swipeThresholdPx = thresholdPx, maxOffsetPx = maxOffsetPx)
+        assertEquals(0, navCount)
+        dispatchRelease(controller.onRelease(x = 690f, isCancel = false, swipeThresholdPx = thresholdPx))
+        assertEquals(1, navCount)
+        assertEquals(-1, lastDir)
+
+        // 4. ACTION_CANCEL never triggers track change even when past threshold
+        navCount = 0
+        lastDir = 0
+        controller.onDown(x = 500f, y = 400f, nowMs = 4_000L)
+        controller.onMove(x = 280f, y = 400f, nowMs = 4_080L, touchSlopPx = slopPx, swipeThresholdPx = thresholdPx, maxOffsetPx = maxOffsetPx)
+        dispatchRelease(controller.onRelease(x = 280f, isCancel = true, swipeThresholdPx = thresholdPx))
+        assertEquals(0, navCount)
+        assertEquals(0, controller.committedDirection)
+        assertEquals(0f, controller.translationX, 0.0001f)
+
+        // 5. Fast outward fling triggers next once on release; PlayLoupeController slide-back cancels cleanly
+        navCount = 0
+        lastDir = 0
+        controller.onDown(x = 500f, y = 400f, nowMs = 5_000L)
+        controller.onMove(x = 460f, y = 400f, nowMs = 5_020L, touchSlopPx = slopPx, swipeThresholdPx = thresholdPx, maxOffsetPx = maxOffsetPx)
+        controller.onMove(x = 420f, y = 400f, nowMs = 5_040L, touchSlopPx = slopPx, swipeThresholdPx = thresholdPx, maxOffsetPx = maxOffsetPx) // -2000 px/s outward
+        assertEquals(0, navCount)
+        dispatchRelease(controller.onRelease(x = 420f, isCancel = false, swipeThresholdPx = thresholdPx))
+        assertEquals(1, navCount)
+        assertEquals(1, lastDir)
+
+        val playCtrl = NowPlayingView.PlayLoupeController()
+        playCtrl.onTouchDown()
+        playCtrl.onDragMove(rawDxPx = 150f, thresholdPx = 120f, maxOffsetPx = 180f, nowMs = 6_000L)
+        assertEquals(1, playCtrl.activeDirection)
+        playCtrl.onDragMove(rawDxPx = 12f, thresholdPx = 120f, maxOffsetPx = 180f, nowMs = 6_400L)
+        assertEquals(0, playCtrl.activeDirection)
+        assertEquals(0, playCtrl.onTouchUp(wasDragging = true, isCancel = false))
+    }
 }
