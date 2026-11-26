@@ -29,6 +29,31 @@ class LiquidGlassDrawable(
     initialPalette: CoverPalette = CoverPaletteExtractor.defaultPalette()
 ) : Drawable() {
 
+    object OpticsMath {
+        const val MAX_STRETCH_X = 1.12f
+
+        fun computeVelocityStretchX(
+            velocityPxPerSec: Float,
+            referenceVelocityPxPerSec: Float = 1800f
+        ): Float {
+            val v = abs(velocityPxPerSec)
+            if (v <= 1f || referenceVelocityPxPerSec <= 0f) return 1f
+            val ratio = v / (v + referenceVelocityPxPerSec * 0.5f)
+            return (1f + (MAX_STRETCH_X - 1f) * ratio).coerceIn(1f, MAX_STRETCH_X)
+        }
+
+        fun computeSpecularIntensity(
+            touchActive: Boolean,
+            stretchX: Float,
+            dwellFlash: Float = 0f
+        ): Float {
+            val touchBoost = if (touchActive) 0.35f else 0f
+            val stretchFrac = ((stretchX - 1f) / (MAX_STRETCH_X - 1f)).coerceIn(0f, 1f)
+            val dwellBoost = dwellFlash.coerceIn(0f, 1f) * 0.65f
+            return (touchBoost + stretchFrac * 0.35f + dwellBoost).coerceIn(0f, 1f)
+        }
+    }
+
     constructor(
         context: Context,
         cornerRadiusDp: Float = 22f,
@@ -45,6 +70,8 @@ class LiquidGlassDrawable(
     private var useAccentGlowAsTint: Boolean = false
     private var drawableAlpha: Int = 255
     private var amoledProgress: Float = 0f
+    private var specularIntensity: Float = 0f
+    private var stretchX: Float = 1f
 
     private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
@@ -55,6 +82,11 @@ class LiquidGlassDrawable(
     private val rimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeWidth = rimWidthPx.coerceAtLeast(1f)
+    }
+    private val specularPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = (rimWidthPx * 1.15f).coerceAtLeast(1.2f)
+        alpha = 0
     }
 
     private val fillRect = RectF()
@@ -99,6 +131,41 @@ class LiquidGlassDrawable(
         invalidateSelf()
     }
 
+    fun setSpecularIntensity(intensity: Float) {
+        val clamped = intensity.coerceIn(0f, 1f)
+        if (abs(specularIntensity - clamped) < 0.005f) return
+        specularIntensity = clamped
+        specularPaint.alpha = (drawableAlpha * specularIntensity).roundToInt().coerceIn(0, 255)
+        invalidateSelf()
+    }
+
+    fun setStretchX(stretch: Float) {
+        val clamped = stretch.coerceIn(1f, OpticsMath.MAX_STRETCH_X)
+        if (abs(stretchX - clamped) < 0.002f) return
+        stretchX = clamped
+        invalidateSelf()
+    }
+
+    fun setMotionState(
+        velocityPxPerSec: Float,
+        touchActive: Boolean,
+        dwellFlash: Float = 0f
+    ) {
+        val nextStretch = OpticsMath.computeVelocityStretchX(velocityPxPerSec)
+        val nextSpecular = OpticsMath.computeSpecularIntensity(touchActive, nextStretch, dwellFlash)
+        var changed = false
+        if (abs(stretchX - nextStretch) >= 0.002f) {
+            stretchX = nextStretch
+            changed = true
+        }
+        if (abs(specularIntensity - nextSpecular) >= 0.005f) {
+            specularIntensity = nextSpecular
+            specularPaint.alpha = (drawableAlpha * specularIntensity).roundToInt().coerceIn(0, 255)
+            changed = true
+        }
+        if (changed) invalidateSelf()
+    }
+
     override fun onBoundsChange(bounds: Rect) {
         super.onBoundsChange(bounds)
         fillRect.set(bounds)
@@ -116,12 +183,27 @@ class LiquidGlassDrawable(
         if (fillRect.isEmpty) return
         val maxRadius = minOf(fillRect.width(), fillRect.height()) * 0.5f
         val radius = cornerRadiusPx.coerceAtMost(maxRadius)
+        val rimRadius = (radius - rimPaint.strokeWidth * 0.5f).coerceAtLeast(0f)
+
+        val stretched = stretchX > 1.001f
+        val saveCount = if (stretched) {
+            canvas.save().also {
+                canvas.scale(stretchX, 1f, fillRect.centerX(), fillRect.centerY())
+            }
+        } else {
+            0
+        }
 
         canvas.drawRoundRect(fillRect, radius, radius, fillPaint)
         canvas.drawRoundRect(fillRect, radius, radius, sheenPaint)
-
-        val rimRadius = (radius - rimPaint.strokeWidth * 0.5f).coerceAtLeast(0f)
         canvas.drawRoundRect(rimRect, rimRadius, rimRadius, rimPaint)
+        if (specularIntensity > 0.005f) {
+            canvas.drawRoundRect(rimRect, rimRadius, rimRadius, specularPaint)
+        }
+
+        if (stretched) {
+            canvas.restoreToCount(saveCount)
+        }
     }
 
     override fun setAlpha(alpha: Int) {
@@ -131,6 +213,7 @@ class LiquidGlassDrawable(
         applyPaletteColors()
         sheenPaint.alpha = clamped
         rimPaint.alpha = clamped
+        specularPaint.alpha = (clamped * specularIntensity).roundToInt().coerceIn(0, 255)
         invalidateSelf()
     }
 
@@ -138,6 +221,7 @@ class LiquidGlassDrawable(
         fillPaint.colorFilter = colorFilter
         sheenPaint.colorFilter = colorFilter
         rimPaint.colorFilter = colorFilter
+        specularPaint.colorFilter = colorFilter
         invalidateSelf()
     }
 
@@ -206,10 +290,22 @@ class LiquidGlassDrawable(
             rimBottomRight,
             Shader.TileMode.CLAMP
         )
+
+        specularPaint.shader = LinearGradient(
+            left,
+            top,
+            left + bounds.width() * 0.65f,
+            top + bounds.height() * 0.55f,
+            SPECULAR_TOP_LEFT_COLOR,
+            SHEEN_BOTTOM_COLOR,
+            Shader.TileMode.CLAMP
+        )
+        specularPaint.alpha = (drawableAlpha * specularIntensity).roundToInt().coerceIn(0, 255)
     }
 
     private companion object {
         const val SHEEN_TOP_COLOR = 0x22FFFFFF
         const val SHEEN_BOTTOM_COLOR = 0x00FFFFFF
+        const val SPECULAR_TOP_LEFT_COLOR = 0xCCFFFFFF.toInt()
     }
 }

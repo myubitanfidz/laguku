@@ -1,6 +1,7 @@
 package com.laguku.player
 
 import com.laguku.player.ui.glass.CoverPaletteExtractor
+import com.laguku.player.ui.glass.LiquidGlassDrawable
 import com.laguku.player.ui.glass.StackBlur
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -99,5 +100,31 @@ class GlassAndPaletteTest {
 
         val allTransparent = IntArray(64) { 0x00FF0000 }
         assertEquals(defaultPal, CoverPaletteExtractor.extractFromPixels(allTransparent))
+    }
+
+    @Test
+    fun liquidGlassOptics_computesBoundedVelocityStretchXAndSpecularIntensity() {
+        assertEquals(1.12f, LiquidGlassDrawable.OpticsMath.MAX_STRETCH_X, 0.0001f)
+        assertEquals(1f, LiquidGlassDrawable.OpticsMath.computeVelocityStretchX(0f), 0.0001f)
+
+        val slowStretch = LiquidGlassDrawable.OpticsMath.computeVelocityStretchX(450f)
+        val fastStretch = LiquidGlassDrawable.OpticsMath.computeVelocityStretchX(2400f)
+        val extremeStretch = LiquidGlassDrawable.OpticsMath.computeVelocityStretchX(50_000f)
+        val negativeFast = LiquidGlassDrawable.OpticsMath.computeVelocityStretchX(-2400f)
+
+        assertTrue(slowStretch > 1f && slowStretch < fastStretch)
+        assertTrue(fastStretch <= 1.12f)
+        assertTrue(extremeStretch <= 1.12f && extremeStretch > 1.11f)
+        assertEquals(fastStretch, negativeFast, 0.0001f)
+
+        val idleSpec = LiquidGlassDrawable.OpticsMath.computeSpecularIntensity(touchActive = false, stretchX = 1f)
+        val touchSpec = LiquidGlassDrawable.OpticsMath.computeSpecularIntensity(touchActive = true, stretchX = 1f)
+        val movingSpec = LiquidGlassDrawable.OpticsMath.computeSpecularIntensity(touchActive = true, stretchX = fastStretch)
+        val dwellSpec = LiquidGlassDrawable.OpticsMath.computeSpecularIntensity(touchActive = true, stretchX = 1.12f, dwellFlash = 1f)
+
+        assertEquals(0f, idleSpec, 0.0001f)
+        assertTrue(touchSpec > idleSpec)
+        assertTrue(movingSpec > touchSpec)
+        assertTrue(dwellSpec in 0.99f..1f)
     }
 }

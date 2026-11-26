@@ -25,6 +25,12 @@ object SpringAnimatorHelper {
     const val SPRING_DAMPING_RATIO = 0.80f
     const val SPRING_PRESS_SCALE = 0.96f
 
+    data class SpringProfile(val stiffness: Float, val dampingRatio: Float)
+
+    val SPRING_FLUID_SCROLL = SpringProfile(stiffness = 145f, dampingRatio = 0.94f)
+    val SPRING_LOUPE_GLIDE = SpringProfile(stiffness = 280f, dampingRatio = 0.84f)
+    val SPRING_MORPH_SHEET = SpringProfile(stiffness = 320f, dampingRatio = 0.86f)
+
     const val CURVE_X1 = 0.22f
     const val CURVE_Y1 = 1f
     const val CURVE_X2 = 0.36f
@@ -270,6 +276,8 @@ object SpringAnimatorHelper {
         fromTranslationY: Float = 0f,
         fromScale: Float = 0.96f,
         fromTranslationX: Float = 0f,
+        stiffness: Float = SPRING_STIFFNESS,
+        dampingRatio: Float = SPRING_DAMPING_RATIO,
         onEnd: (() -> Unit)? = null
     ) {
         cancelSpring(view, CHANNEL_REVEAL)
@@ -292,6 +300,8 @@ object SpringAnimatorHelper {
             key = view,
             start = 0f,
             target = 1f,
+            stiffness = stiffness,
+            dampingRatio = dampingRatio,
             channel = CHANNEL_REVEAL,
             onUpdate = { p ->
                 val clampedAlpha = p.coerceIn(0f, 1f)
@@ -313,6 +323,8 @@ object SpringAnimatorHelper {
         toScale: Float = 0.96f,
         toTranslationX: Float = 0f,
         endVisibility: Int = View.GONE,
+        stiffness: Float = SPRING_STIFFNESS,
+        dampingRatio: Float = SPRING_DAMPING_RATIO,
         onEnd: (() -> Unit)? = null
     ) {
         cancelSpring(view, CHANNEL_REVEAL)
@@ -338,6 +350,8 @@ object SpringAnimatorHelper {
             key = view,
             start = 0f,
             target = 1f,
+            stiffness = stiffness,
+            dampingRatio = dampingRatio,
             channel = CHANNEL_REVEAL,
             onUpdate = { p ->
                 val clamped = p.coerceIn(0f, 1f)

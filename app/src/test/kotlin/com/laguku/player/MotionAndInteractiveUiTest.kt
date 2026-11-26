@@ -47,6 +47,41 @@ class MotionAndInteractiveUiTest {
     }
 
     @Test
+    fun ios26SpringProfiles_exposeCalibratedConstantsAndConvergeAt60And120Hz() {
+        assertEquals(145f, SpringAnimatorHelper.SPRING_FLUID_SCROLL.stiffness, 0.0001f)
+        assertEquals(0.94f, SpringAnimatorHelper.SPRING_FLUID_SCROLL.dampingRatio, 0.0001f)
+        assertEquals(280f, SpringAnimatorHelper.SPRING_LOUPE_GLIDE.stiffness, 0.0001f)
+        assertEquals(0.84f, SpringAnimatorHelper.SPRING_LOUPE_GLIDE.dampingRatio, 0.0001f)
+        assertEquals(320f, SpringAnimatorHelper.SPRING_MORPH_SHEET.stiffness, 0.0001f)
+        assertEquals(0.86f, SpringAnimatorHelper.SPRING_MORPH_SHEET.dampingRatio, 0.0001f)
+
+        val profiles = listOf(
+            SpringAnimatorHelper.SPRING_FLUID_SCROLL,
+            SpringAnimatorHelper.SPRING_LOUPE_GLIDE,
+            SpringAnimatorHelper.SPRING_MORPH_SHEET
+        )
+        for (profile in profiles) {
+            for (dt in listOf(1f / 60f, 1f / 120f)) {
+                val solver = SpringAnimatorHelper.SpringSolver(
+                    value = 0f,
+                    target = 1f,
+                    stiffness = profile.stiffness,
+                    dampingRatio = profile.dampingRatio
+                )
+                var settled = false
+                var ticks = 0
+                while (!settled && ticks < 500) {
+                    settled = solver.step(dt)
+                    ticks++
+                }
+                assertTrue("Profile $profile must settle at dt=$dt", settled)
+                assertEquals(1f, solver.value, 0.0001f)
+                assertEquals(0f, solver.velocity, 0.0001f)
+            }
+        }
+    }
+
+    @Test
     fun scrubMath_handlesNearestSlotRubberBandAndDynamicWidth() {
         val centers = floatArrayOf(100f, 250f, 450f)
         val widths = floatArrayOf(80f, 120f, 100f)
