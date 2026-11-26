@@ -1613,14 +1613,23 @@ class NowPlayingView(
                         playLoupeController.onTouchDown()
                         mainHandler.removeCallbacks(playDwellRunnable)
                         SpringAnimatorHelper.cancelSpring(playLoupeView, CHANNEL_PLAY_DRAG)
-                        animatePlayLoupeScale(1.07f)
+                        val reduced = SpringAnimatorHelper.isReducedMotionEnabled(context)
+                        animatePlayLoupeScale(
+                            if (reduced) 1f else SpringAnimatorHelper.GelPhysicsMath.ACTIVE_LIFT_SCALE,
+                            bouncy = false
+                        )
                         playPauseGlass.setMotionState(0f, touchActive = true)
+                        playPauseGlass.setFingertipIllumination(event.x, event.y, 1f)
+                        SpringAnimatorHelper.broadcastNeighborLightBleed(playLoupeView, event.x, event.y, active = true)
                         v.parent?.requestDisallowInterceptTouchEvent(true)
                         true
                     }
                     MotionEvent.ACTION_MOVE -> {
                         val dx = event.rawX - playDragDownRawX
                         val dy = event.rawY - playDragDownRawY
+                        val reduced = SpringAnimatorHelper.isReducedMotionEnabled(context)
+                        playPauseGlass.setFingertipIllumination(event.x, event.y, 1f)
+                        SpringAnimatorHelper.broadcastNeighborLightBleed(playLoupeView, event.x, event.y, active = true)
                         if (!isPlayDragging && (abs(dx) > touchSlop || abs(dy) > touchSlop)) {
                             if (abs(dx) >= abs(dy)) {
                                 isPlayDragging = true
@@ -1650,6 +1659,9 @@ class NowPlayingView(
                             v.translationX = playLoupeController.iconTranslationX
                             playLoupeView.translationX = update.loupeOffsetX
                             playPauseGlass.setMotionState(vx, touchActive = true)
+                            val stretch = SpringAnimatorHelper.GelPhysicsMath.computeConstantVolumeStretch(vx, reduced)
+                            val squash = SpringAnimatorHelper.GelPhysicsMath.computeConstantVolumeSquash(stretch)
+                            playPauseGlass.setGelDeformation(stretch, squash)
                             updateTransportTargetHighlight(update.direction)
 
                             if (update.thresholdCrossed) {
@@ -1673,18 +1685,26 @@ class NowPlayingView(
                         isPlayDragging = false
                         updateTransportTargetHighlight(0)
                         playPauseGlass.setMotionState(0f, touchActive = false)
-                        animatePlayLoupeScale(1f)
+                        playPauseGlass.setGelDeformation(1f, 1f)
+                        playPauseGlass.setFingertipIllumination(event.x, event.y, 0f)
+                        SpringAnimatorHelper.broadcastNeighborLightBleed(playLoupeView, event.x, event.y, active = false)
+                        animatePlayLoupeScale(1f, bouncy = wasDrag && !isCancel)
 
                         val triggerDir = playLoupeController.onTouchUp(wasDrag, isCancel)
                         v.translationX = playLoupeController.iconTranslationX
 
                         if (wasDrag) {
+                            val releaseProfile = if (SpringAnimatorHelper.isReducedMotionEnabled(context)) {
+                                SpringAnimatorHelper.SPRING_REDUCED_MOTION
+                            } else {
+                                SpringAnimatorHelper.SPRING_BOUNCY
+                            }
                             SpringAnimatorHelper.animateSpring(
                                 key = playLoupeView,
                                 start = playLoupeView.translationX,
                                 target = 0f,
-                                stiffness = SpringAnimatorHelper.SPRING_LOUPE_GLIDE.stiffness,
-                                dampingRatio = SpringAnimatorHelper.SPRING_LOUPE_GLIDE.dampingRatio,
+                                stiffness = releaseProfile.stiffness,
+                                dampingRatio = releaseProfile.dampingRatio,
                                 valueThreshold = 0.25f,
                                 channel = CHANNEL_PLAY_DRAG,
                                 onUpdate = { tx -> playLoupeView.translationX = tx }
@@ -2278,13 +2298,18 @@ class NowPlayingView(
         }
     }
 
-    private fun animatePlayLoupeScale(targetScale: Float) {
+    private fun animatePlayLoupeScale(targetScale: Float, bouncy: Boolean = false) {
+        val profile = when {
+            SpringAnimatorHelper.isReducedMotionEnabled(context) -> SpringAnimatorHelper.SPRING_REDUCED_MOTION
+            bouncy -> SpringAnimatorHelper.SPRING_BOUNCY
+            else -> SpringAnimatorHelper.SPRING_SNAPPY
+        }
         SpringAnimatorHelper.animateSpring(
             key = playLoupeView,
             start = playLoupeView.scaleX,
             target = targetScale,
-            stiffness = SpringAnimatorHelper.SPRING_LOUPE_GLIDE.stiffness,
-            dampingRatio = SpringAnimatorHelper.SPRING_LOUPE_GLIDE.dampingRatio,
+            stiffness = profile.stiffness,
+            dampingRatio = profile.dampingRatio,
             channel = 0,
             onUpdate = { s ->
                 playLoupeView.scaleX = s

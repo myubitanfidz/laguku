@@ -8,9 +8,14 @@ import android.provider.Settings
 import android.view.Choreographer
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewGroup
 import android.view.animation.PathInterpolator
 import android.widget.ImageView
+import com.laguku.player.ui.glass.LiquidGlassDrawable
+import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.exp
+import kotlin.math.hypot
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
@@ -27,9 +32,57 @@ object SpringAnimatorHelper {
 
     data class SpringProfile(val stiffness: Float, val dampingRatio: Float)
 
+    fun springFromResponse(responseMs: Float, dampingFraction: Float): SpringProfile {
+        val respSec = (responseMs / 1000f).coerceAtLeast(0.05f)
+        val omega = (2.0 * PI / respSec).toFloat()
+        return SpringProfile(
+            stiffness = omega * omega,
+            dampingRatio = dampingFraction.coerceIn(0.2f, 1.5f)
+        )
+    }
+
+    val SPRING_SNAPPY = springFromResponse(responseMs = 240f, dampingFraction = 0.82f)
+    val SPRING_SMOOTH = springFromResponse(responseMs = 340f, dampingFraction = 0.88f)
+    val SPRING_BOUNCY = springFromResponse(responseMs = 420f, dampingFraction = 0.68f)
+    val SPRING_REDUCED_MOTION = SpringProfile(stiffness = 1600f, dampingRatio = 1.0f)
+
     val SPRING_FLUID_SCROLL = SpringProfile(stiffness = 145f, dampingRatio = 0.94f)
     val SPRING_LOUPE_GLIDE = SpringProfile(stiffness = 280f, dampingRatio = 0.84f)
     val SPRING_MORPH_SHEET = SpringProfile(stiffness = 320f, dampingRatio = 0.86f)
+
+    object GelPhysicsMath {
+        const val ACTIVE_LIFT_SCALE = 1.06f
+        const val PRESS_COMPRESSION_SCALE = 0.94f
+        const val VELOCITY_STRETCH_SENSITIVITY = 0.00035f
+        const val MAX_VELOCITY_STRETCH = 1.24f
+        const val NEIGHBOR_BLEED_RADIUS_RATIO = 1.4f
+
+        fun computeConstantVolumeStretch(
+            velocityPxPerSec: Float,
+            reducedMotion: Boolean = false
+        ): Float {
+            if (reducedMotion) return 1f
+            return (1f + abs(velocityPxPerSec) * VELOCITY_STRETCH_SENSITIVITY)
+                .coerceIn(1f, MAX_VELOCITY_STRETCH)
+        }
+
+        fun computeConstantVolumeSquash(stretch: Float): Float {
+            val s = stretch.coerceAtLeast(1f)
+            return (1f / sqrt(s)).coerceIn(0.80f, 1f)
+        }
+
+        fun computeNeighborBleedIntensity(
+            distancePx: Float,
+            controlSizePx: Float,
+            reducedMotion: Boolean = false
+        ): Float {
+            if (reducedMotion || controlSizePx <= 0f) return 0f
+            val maxRadius = controlSizePx * NEIGHBOR_BLEED_RADIUS_RATIO
+            if (distancePx >= maxRadius) return 0f
+            val u = (distancePx.coerceAtLeast(0f) / maxRadius).coerceIn(0f, 1f)
+            return (exp(-3f * u) * (1f - u)).coerceIn(0f, 1f)
+        }
+    }
 
     const val CURVE_X1 = 0.22f
     const val CURVE_Y1 = 1f
@@ -192,6 +245,7 @@ object SpringAnimatorHelper {
         dampingRatio: Float = SPRING_DAMPING_RATIO,
         valueThreshold: Float = 0.001f,
         channel: Int = 0,
+        initialVelocity: Float = 0f,
         onUpdate: (Float) -> Unit,
         onEnd: (() -> Unit)? = null
     ) {
@@ -207,6 +261,9 @@ object SpringAnimatorHelper {
             existing.solver.target = target
             existing.solver.stiffness = stiffness
             existing.solver.dampingRatio = dampingRatio
+            if (initialVelocity != 0f) {
+                existing.solver.velocity = initialVelocity
+            }
             existing.solver.valueThreshold = valueThreshold
             existing.solver.velocityThreshold = (valueThreshold * 10f).coerceAtLeast(0.01f)
             existing.onUpdate = onUpdate
@@ -223,7 +280,7 @@ object SpringAnimatorHelper {
             val solver = SpringSolver(
                 value = start,
                 target = target,
-                velocity = 0f,
+                velocity = initialVelocity,
                 stiffness = stiffness,
                 dampingRatio = dampingRatio,
                 valueThreshold = valueThreshold,
@@ -431,16 +488,70 @@ object SpringAnimatorHelper {
         }
     }
 
+    fun broadcastNeighborLightBleed(
+        sourceView: View,
+        localTouchX: Float,
+        localTouchY: Float,
+        active: Boolean
+    ) {
+        val parentGroup = sourceView.parent as? ViewGroup ?: return
+        val reducedMotion = isReducedMotionEnabled(sourceView.context)
+        if (!active || reducedMotion) {
+            for (i in 0 until parentGroup.childCount) {
+                val child = parentGroup.getChildAt(i)
+                if (child !== sourceView) {
+                    (child.background as? LiquidGlassDrawable)?.setNeighborLightBleed(0f, 0f, 0f)
+                }
+            }
+            return
+        }
+
+        val parentTouchX = sourceView.left + localTouchX
+        val parentTouchY = sourceView.top + localTouchY
+        val controlSize = maxOf(sourceView.width, sourceView.height).toFloat().coerceAtLeast(1f)
+        for (i in 0 until parentGroup.childCount) {
+            val child = parentGroup.getChildAt(i)
+            if (child === sourceView || child.visibility != View.VISIBLE) continue
+            val siblingGlass = child.background as? LiquidGlassDrawable ?: continue
+            val cx = child.left + child.width * 0.5f
+            val cy = child.top + child.height * 0.5f
+            val dist = hypot(parentTouchX - cx, parentTouchY - cy)
+            val intensity = GelPhysicsMath.computeNeighborBleedIntensity(dist, controlSize, reducedMotion = false)
+            siblingGlass.setNeighborLightBleed(
+                parentTouchX - child.left,
+                parentTouchY - child.top,
+                intensity
+            )
+        }
+    }
+
     /**
-     * Attaches physical press feedback (scale to 0.96 with apple spring physics)
+     * Attaches physical press feedback (scale to 0.96 with apple spring physics,
+     * internal fingertip illumination, and neighbor light bleed)
      * without intercepting clicks or allocating in the touch listener.
      */
     @SuppressLint("ClickableViewAccessibility")
     fun attachPressFeedback(view: View) {
         view.setOnTouchListener { v, event ->
+            val reduced = isReducedMotionEnabled(v.context)
+            val glass = v.background as? LiquidGlassDrawable
             when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN -> springScale(v, SPRING_PRESS_SCALE)
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> springScale(v, 1f)
+                MotionEvent.ACTION_DOWN -> {
+                    if (!reduced) {
+                        springScale(v, SPRING_PRESS_SCALE)
+                    }
+                    glass?.setFingertipIllumination(event.x, event.y, 1f)
+                    broadcastNeighborLightBleed(v, event.x, event.y, active = true)
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    glass?.setFingertipIllumination(event.x, event.y, 1f)
+                    broadcastNeighborLightBleed(v, event.x, event.y, active = true)
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    springScale(v, 1f)
+                    glass?.setFingertipIllumination(event.x, event.y, 0f)
+                    broadcastNeighborLightBleed(v, event.x, event.y, active = false)
+                }
             }
             false
         }

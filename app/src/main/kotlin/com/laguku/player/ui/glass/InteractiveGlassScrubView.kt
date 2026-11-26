@@ -309,22 +309,36 @@ class InteractiveGlassScrubView(
                 dwellController.onTouchDown(selectedIndex)
                 mainHandler.removeCallbacks(dwellRunnable)
                 performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                val reduced = SpringAnimatorHelper.isReducedMotionEnabled(context)
                 indicatorGlass.setTintProfile(
                     baseFraction = 0.24f,
                     accentFraction = if (neutralLensMode) 0.12f else 0.52f,
                     preferAccentGlow = !neutralLensMode
                 )
                 indicatorGlass.setMotionState(0f, touchActive = true)
-                animateCapsuleScale(PRESS_SCALE_X, PRESS_SCALE_Y)
+                indicatorGlass.setFingertipIllumination(event.x - indicatorBounds.left, event.y - indicatorBounds.top, 1f)
+                containerGlass.setFingertipIllumination(event.x, event.y, 0.55f)
+                SpringAnimatorHelper.broadcastNeighborLightBleed(this, event.x, event.y, active = true)
+                if (!reduced) {
+                    animateCapsuleScale(
+                        SpringAnimatorHelper.GelPhysicsMath.ACTIVE_LIFT_SCALE,
+                        SpringAnimatorHelper.GelPhysicsMath.ACTIVE_LIFT_SCALE,
+                        bouncy = false
+                    )
+                }
                 return true
             }
 
             MotionEvent.ACTION_MOVE -> {
                 if (!isPressedScrub) return false
+                val reduced = SpringAnimatorHelper.isReducedMotionEnabled(context)
                 val dx = event.x - downX
                 if (!hasDragged && abs(dx) > touchSlop * 0.4f) {
                     hasDragged = true
                 }
+                indicatorGlass.setFingertipIllumination(event.x - indicatorBounds.left, event.y - indicatorBounds.top, 1f)
+                containerGlass.setFingertipIllumination(event.x, event.y, 0.55f)
+                SpringAnimatorHelper.broadcastNeighborLightBleed(this, event.x, event.y, active = true)
                 if (hasDragged) {
                     SpringAnimatorHelper.cancelSpring(this, CHANNEL_CENTER)
                     SpringAnimatorHelper.cancelSpring(this, CHANNEL_WIDTH)
@@ -339,6 +353,9 @@ class InteractiveGlassScrubView(
                     capsuleCenterX = clampedCenter
                     capsuleWidth = ScrubMath.interpolateSlotWidth(clampedCenter, slotCenters, slotWidths)
                     indicatorGlass.setMotionState(vx, touchActive = true)
+                    val stretch = SpringAnimatorHelper.GelPhysicsMath.computeConstantVolumeStretch(vx, reduced)
+                    val squash = SpringAnimatorHelper.GelPhysicsMath.computeConstantVolumeSquash(stretch)
+                    indicatorGlass.setGelDeformation(stretch, squash)
 
                     val hovered = ScrubMath.nearestSlotIndex(clampedCenter, slotCenters)
                     if (dwellController.onHoverSlot(hovered, nowMs)) {
@@ -376,7 +393,11 @@ class InteractiveGlassScrubView(
                     preferAccentGlow = !neutralLensMode
                 )
                 indicatorGlass.setMotionState(0f, touchActive = false)
-                animateCapsuleScale(1f, 1f)
+                indicatorGlass.setGelDeformation(1f, 1f)
+                indicatorGlass.setFingertipIllumination(event.x, event.y, 0f)
+                containerGlass.setFingertipIllumination(event.x, event.y, 0f)
+                SpringAnimatorHelper.broadcastNeighborLightBleed(this, event.x, event.y, active = false)
+                animateCapsuleScale(1f, 1f, bouncy = !isCancel && hasDragged)
                 moveCapsuleToSlot(target, animate = true)
                 val commitIdx = dwellController.onTouchUp(target, isCancel)
                 if (commitIdx != null) {
@@ -412,7 +433,8 @@ class InteractiveGlassScrubView(
         if (index !in slotCenters.indices) return
         val targetX = slotCenters[index]
         val targetW = slotWidths[index]
-        if (!animate || !indicatorInitialized) {
+        val reduced = SpringAnimatorHelper.isReducedMotionEnabled(context)
+        if (!animate || !indicatorInitialized || reduced) {
             SpringAnimatorHelper.cancelSpring(this, CHANNEL_CENTER)
             SpringAnimatorHelper.cancelSpring(this, CHANNEL_WIDTH)
             capsuleCenterX = targetX
@@ -421,12 +443,13 @@ class InteractiveGlassScrubView(
             invalidate()
             return
         }
+        val profile = SpringAnimatorHelper.SPRING_SNAPPY
         SpringAnimatorHelper.animateSpring(
             key = this,
             start = capsuleCenterX,
             target = targetX,
-            stiffness = SpringAnimatorHelper.SPRING_LOUPE_GLIDE.stiffness,
-            dampingRatio = SpringAnimatorHelper.SPRING_LOUPE_GLIDE.dampingRatio,
+            stiffness = profile.stiffness,
+            dampingRatio = profile.dampingRatio,
             valueThreshold = 0.25f,
             channel = CHANNEL_CENTER,
             onUpdate = { x ->
@@ -438,8 +461,8 @@ class InteractiveGlassScrubView(
             key = this,
             start = capsuleWidth,
             target = targetW,
-            stiffness = SpringAnimatorHelper.SPRING_LOUPE_GLIDE.stiffness,
-            dampingRatio = SpringAnimatorHelper.SPRING_LOUPE_GLIDE.dampingRatio,
+            stiffness = profile.stiffness,
+            dampingRatio = profile.dampingRatio,
             valueThreshold = 0.25f,
             channel = CHANNEL_WIDTH,
             onUpdate = { w ->
@@ -449,13 +472,18 @@ class InteractiveGlassScrubView(
         )
     }
 
-    private fun animateCapsuleScale(targetX: Float, targetY: Float) {
+    private fun animateCapsuleScale(targetX: Float, targetY: Float, bouncy: Boolean = false) {
+        val profile = when {
+            SpringAnimatorHelper.isReducedMotionEnabled(context) -> SpringAnimatorHelper.SPRING_REDUCED_MOTION
+            bouncy -> SpringAnimatorHelper.SPRING_BOUNCY
+            else -> SpringAnimatorHelper.SPRING_SNAPPY
+        }
         SpringAnimatorHelper.animateSpring(
             key = this,
             start = capsuleScaleX,
             target = targetX,
-            stiffness = SpringAnimatorHelper.SPRING_LOUPE_GLIDE.stiffness,
-            dampingRatio = SpringAnimatorHelper.SPRING_LOUPE_GLIDE.dampingRatio,
+            stiffness = profile.stiffness,
+            dampingRatio = profile.dampingRatio,
             channel = CHANNEL_SCALE_X,
             onUpdate = { sx ->
                 capsuleScaleX = sx
@@ -466,8 +494,8 @@ class InteractiveGlassScrubView(
             key = this,
             start = capsuleScaleY,
             target = targetY,
-            stiffness = SpringAnimatorHelper.SPRING_LOUPE_GLIDE.stiffness,
-            dampingRatio = SpringAnimatorHelper.SPRING_LOUPE_GLIDE.dampingRatio,
+            stiffness = profile.stiffness,
+            dampingRatio = profile.dampingRatio,
             channel = CHANNEL_SCALE_Y,
             onUpdate = { sy ->
                 capsuleScaleY = sy

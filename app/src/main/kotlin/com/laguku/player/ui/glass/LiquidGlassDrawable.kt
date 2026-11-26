@@ -4,8 +4,10 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.ColorFilter
 import android.graphics.LinearGradient
+import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.PixelFormat
+import android.graphics.RadialGradient
 import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.RuntimeShader
@@ -308,6 +310,14 @@ class LiquidGlassDrawable(
     private var amoledProgress: Float = 0f
     private var specularIntensity: Float = 0f
     private var stretchX: Float = 1f
+    private var stretchY: Float = 1f
+
+    private var illuminationIntensity: Float = 0f
+    private var illuminationX: Float = 0f
+    private var illuminationY: Float = 0f
+    private var neighborBleedIntensity: Float = 0f
+    private var neighborBleedX: Float = 0f
+    private var neighborBleedY: Float = 0f
 
     private var surfaceScale: GlassSurfaceScale = GlassSurfaceScale.SMALL
     private var glassVariant: GlassVariant = GlassVariant.REGULAR
@@ -339,6 +349,34 @@ class LiquidGlassDrawable(
     private val specularPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeWidth = (rimWidthPx * 1.15f).coerceAtLeast(1.2f)
+        alpha = 0
+    }
+    private val illuminationShader = RadialGradient(
+        0f,
+        0f,
+        1f,
+        intArrayOf(0xFFFFFFFF.toInt(), 0x55FFFFFF, 0x00FFFFFF),
+        floatArrayOf(0f, 0.45f, 1f),
+        Shader.TileMode.CLAMP
+    )
+    private val neighborBleedShader = RadialGradient(
+        0f,
+        0f,
+        1f,
+        intArrayOf(0xFFFFFFFF.toInt(), 0x44FFFFFF, 0x00FFFFFF),
+        floatArrayOf(0f, 0.50f, 1f),
+        Shader.TileMode.CLAMP
+    )
+    private val illuminationMatrix = Matrix()
+    private val neighborBleedMatrix = Matrix()
+    private val illuminationPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        shader = illuminationShader
+        alpha = 0
+    }
+    private val neighborBleedPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        shader = neighborBleedShader
         alpha = 0
     }
 
@@ -469,9 +507,81 @@ class LiquidGlassDrawable(
 
     fun setStretchX(stretch: Float) {
         val clamped = stretch.coerceIn(1f, OpticsMath.MAX_STRETCH_X)
-        if (abs(stretchX - clamped) < 0.002f) return
+        if (abs(stretchX - clamped) < 0.002f && abs(stretchY - 1f) < 0.002f) return
         stretchX = clamped
+        stretchY = 1f
         invalidateSelf()
+    }
+
+    fun setGelDeformation(scaleX: Float, scaleY: Float) {
+        val sx = scaleX.coerceIn(0.80f, SpringAnimatorHelper.GelPhysicsMath.MAX_VELOCITY_STRETCH)
+        val sy = scaleY.coerceIn(0.80f, SpringAnimatorHelper.GelPhysicsMath.MAX_VELOCITY_STRETCH)
+        if (abs(stretchX - sx) < 0.002f && abs(stretchY - sy) < 0.002f) return
+        stretchX = sx
+        stretchY = sy
+        invalidateSelf()
+    }
+
+    fun setFingertipIllumination(x: Float, y: Float, intensity: Float) {
+        val nextI = if (accessibilityFlags.reduceMotion || accessibilityFlags.increaseContrast) {
+            0f
+        } else {
+            intensity.coerceIn(0f, 1f)
+        }
+        if (abs(illuminationIntensity - nextI) < 0.005f &&
+            abs(illuminationX - x) < 1f &&
+            abs(illuminationY - y) < 1f
+        ) return
+        illuminationIntensity = nextI
+        illuminationX = x
+        illuminationY = y
+        updateIlluminationMatrices()
+        invalidateSelf()
+    }
+
+    fun setNeighborLightBleed(x: Float, y: Float, intensity: Float) {
+        val nextI = if (accessibilityFlags.reduceMotion || accessibilityFlags.increaseContrast) {
+            0f
+        } else {
+            intensity.coerceIn(0f, 1f)
+        }
+        if (abs(neighborBleedIntensity - nextI) < 0.005f &&
+            abs(neighborBleedX - x) < 1f &&
+            abs(neighborBleedY - y) < 1f
+        ) return
+        neighborBleedIntensity = nextI
+        neighborBleedX = x
+        neighborBleedY = y
+        updateIlluminationMatrices()
+        invalidateSelf()
+    }
+
+    private fun updateIlluminationMatrices() {
+        val isLightPolarity = BezelOpticsMath.resolvePolarityIsLight(surfaceScale, backdropLuminance, defaultLightMode)
+        val peakAlpha = if (isLightPolarity) 0.55f else 0.32f
+        val sizeRef = maxOf(fillRect.width(), fillRect.height()).coerceAtLeast(48f)
+
+        if (illuminationIntensity > 0.005f) {
+            val radius = (sizeRef * 0.72f).coerceAtLeast(36f)
+            illuminationMatrix.setScale(radius, radius)
+            illuminationMatrix.postTranslate(illuminationX, illuminationY)
+            illuminationShader.setLocalMatrix(illuminationMatrix)
+            illuminationPaint.alpha = (drawableAlpha * peakAlpha * illuminationIntensity * materializationProgress)
+                .roundToInt().coerceIn(0, 255)
+        } else {
+            illuminationPaint.alpha = 0
+        }
+
+        if (neighborBleedIntensity > 0.005f) {
+            val radius = (sizeRef * SpringAnimatorHelper.GelPhysicsMath.NEIGHBOR_BLEED_RADIUS_RATIO).coerceAtLeast(48f)
+            neighborBleedMatrix.setScale(radius, radius)
+            neighborBleedMatrix.postTranslate(neighborBleedX, neighborBleedY)
+            neighborBleedShader.setLocalMatrix(neighborBleedMatrix)
+            neighborBleedPaint.alpha = (drawableAlpha * peakAlpha * 0.65f * neighborBleedIntensity * materializationProgress)
+                .roundToInt().coerceIn(0, 255)
+        } else {
+            neighborBleedPaint.alpha = 0
+        }
     }
 
     fun setMotionState(
@@ -482,8 +592,9 @@ class LiquidGlassDrawable(
         val nextStretch = OpticsMath.computeVelocityStretchX(velocityPxPerSec)
         val nextSpecular = OpticsMath.computeSpecularIntensity(touchActive, nextStretch, dwellFlash)
         var changed = false
-        if (abs(stretchX - nextStretch) >= 0.002f) {
+        if (abs(stretchX - nextStretch) >= 0.002f || abs(stretchY - 1f) >= 0.002f) {
             stretchX = nextStretch
+            stretchY = 1f
             changed = true
         }
         if (abs(specularIntensity - nextSpecular) >= 0.005f) {
@@ -520,10 +631,10 @@ class LiquidGlassDrawable(
         val radius = cornerRadiusPx.coerceAtMost(maxRadius)
         val rimRadius = (radius - rimPaint.strokeWidth * 0.5f).coerceAtLeast(0f)
 
-        val stretched = stretchX > 1.001f
+        val stretched = abs(stretchX - 1f) > 0.001f || abs(stretchY - 1f) > 0.001f
         val saveCount = if (stretched) {
             canvas.save().also {
-                canvas.scale(stretchX, 1f, fillRect.centerX(), fillRect.centerY())
+                canvas.scale(stretchX, stretchY, fillRect.centerX(), fillRect.centerY())
             }
         } else {
             0
@@ -542,8 +653,14 @@ class LiquidGlassDrawable(
             canvas.drawRoundRect(fillRect, radius, radius, bezelLensingPaint)
         }
 
-        // Layer 3: Specular Top Sheen
+        // Layer 3: Specular Top Sheen & Internal Fingertip Illumination / Neighbor Bleed
         canvas.drawRoundRect(fillRect, radius, radius, sheenPaint)
+        if (illuminationPaint.alpha > 0) {
+            canvas.drawRoundRect(fillRect, radius, radius, illuminationPaint)
+        }
+        if (neighborBleedPaint.alpha > 0) {
+            canvas.drawRoundRect(fillRect, radius, radius, neighborBleedPaint)
+        }
 
         // Layer 4 front: 135-degree Directional Perimeter Rim Light
         canvas.drawRoundRect(rimRect, rimRadius, rimRadius, rimPaint)
@@ -564,6 +681,7 @@ class LiquidGlassDrawable(
         sheenPaint.alpha = clamped
         rimPaint.alpha = clamped
         specularPaint.alpha = (clamped * specularIntensity).roundToInt().coerceIn(0, 255)
+        updateIlluminationMatrices()
         invalidateSelf()
     }
 
@@ -572,6 +690,8 @@ class LiquidGlassDrawable(
         bezelLensingPaint.colorFilter = colorFilter
         fillPaint.colorFilter = colorFilter
         sheenPaint.colorFilter = colorFilter
+        illuminationPaint.colorFilter = colorFilter
+        neighborBleedPaint.colorFilter = colorFilter
         rimPaint.colorFilter = colorFilter
         specularPaint.colorFilter = colorFilter
         invalidateSelf()
