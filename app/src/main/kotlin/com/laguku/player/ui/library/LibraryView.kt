@@ -1109,10 +1109,10 @@ class LibraryView(
             val iconBadge = ImageView(ctx).apply {
                 scaleType = ImageView.ScaleType.CENTER_INSIDE
                 setPadding(dp(9), dp(9), dp(9), dp(9))
-                background = LiquidGlassDrawable(ctx, 12f, palette)
+                background = null
                 outlineProvider = object : ViewOutlineProvider() {
                     override fun getOutline(view: View, outline: android.graphics.Outline) {
-                        outline.setRoundRect(0, 0, view.width, view.height, 12f * density)
+                        outline.setRoundRect(0, 0, view.width, view.height, 10f * density)
                     }
                 }
                 clipToOutline = true
@@ -1149,7 +1149,7 @@ class LibraryView(
             row.addView(textCol, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
             row.addView(trailing, LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT))
 
-            val holder = EntryViewHolder(row, iconBadge, primary, secondary, trailing)
+            val holder = EntryViewHolder(row, iconBadge, primary, secondary, trailing, LiquidGlassDrawable(ctx, 12f, palette))
             row.setOnClickListener {
                 val pos = holder.bindingAdapterPosition
                 if (pos in entries.indices) {
@@ -1168,12 +1168,12 @@ class LibraryView(
 
         override fun onBindViewHolder(holder: EntryViewHolder, position: Int) {
             (holder.itemView.background as? LiquidGlassDrawable)?.setPalette(palette)
-            (holder.iconBadge.background as? LiquidGlassDrawable)?.setPalette(palette)
 
             val badgePad = (9f * holder.itemView.resources.displayMetrics.density).toInt()
             when (val entry = entries[position]) {
                 is ListEntry.TrackEntry -> {
                     val t = entry.track
+                    if (holder.iconBadge.background != null) holder.iconBadge.background = null
                     holder.iconBadge.scaleType = ImageView.ScaleType.CENTER_CROP
                     holder.iconBadge.setPadding(0, 0, 0, 0)
                     holder.iconBadge.imageTintList = null
@@ -1184,6 +1184,10 @@ class LibraryView(
                 }
                 is ListEntry.FolderEntry -> {
                     holder.iconBadge.tag = null
+                    holder.folderBadgeGlass.setPalette(palette)
+                    if (holder.iconBadge.background !== holder.folderBadgeGlass) {
+                        holder.iconBadge.background = holder.folderBadgeGlass
+                    }
                     holder.iconBadge.scaleType = ImageView.ScaleType.CENTER_INSIDE
                     holder.iconBadge.setPadding(badgePad, badgePad, badgePad, badgePad)
                     holder.iconBadge.setImageResource(R.drawable.ic_folder)
@@ -1194,6 +1198,7 @@ class LibraryView(
                 }
                 is ListEntry.AlbumEntry -> {
                     holder.iconBadge.tag = null
+                    if (holder.iconBadge.background != null) holder.iconBadge.background = null
                     holder.iconBadge.scaleType = ImageView.ScaleType.CENTER_CROP
                     holder.iconBadge.setPadding(0, 0, 0, 0)
                     holder.iconBadge.setImageResource(R.drawable.ic_default_album_cover)
@@ -1204,6 +1209,7 @@ class LibraryView(
                 }
                 is ListEntry.ArtistEntry -> {
                     holder.iconBadge.tag = null
+                    if (holder.iconBadge.background != null) holder.iconBadge.background = null
                     holder.iconBadge.scaleType = ImageView.ScaleType.CENTER_CROP
                     holder.iconBadge.setPadding(0, 0, 0, 0)
                     holder.iconBadge.setImageResource(R.drawable.ic_default_album_cover)
@@ -1214,6 +1220,10 @@ class LibraryView(
                 }
                 is ListEntry.PlaylistEntry -> {
                     holder.iconBadge.tag = null
+                    holder.folderBadgeGlass.setPalette(palette)
+                    if (holder.iconBadge.background !== holder.folderBadgeGlass) {
+                        holder.iconBadge.background = holder.folderBadgeGlass
+                    }
                     holder.iconBadge.scaleType = ImageView.ScaleType.CENTER_INSIDE
                     holder.iconBadge.setPadding(badgePad, badgePad, badgePad, badgePad)
                     holder.iconBadge.setImageResource(R.drawable.ic_playlist)
@@ -1230,7 +1240,8 @@ class LibraryView(
             val iconBadge: ImageView,
             val primary: TextView,
             val secondary: TextView,
-            val trailing: TextView
+            val trailing: TextView,
+            val folderBadgeGlass: LiquidGlassDrawable
         ) : RecyclerView.ViewHolder(itemView) {
             private val trailBuf = CharArray(16)
 
