@@ -55,6 +55,7 @@ import com.laguku.player.model.Track
 import com.laguku.player.ui.glass.CoverPaletteExtractor
 import com.laguku.player.ui.glass.InteractiveGlassScrubView
 import com.laguku.player.ui.glass.LiquidGlassDrawable
+import com.laguku.player.ui.motion.LiquidGlassPressAnimator
 import com.laguku.player.ui.motion.SpringAnimatorHelper
 import kotlin.math.PI
 import kotlin.math.abs
@@ -1575,7 +1576,7 @@ class NowPlayingView(
         miniCoverFrame.apply {
             outlineProvider = miniOutline
             clipToOutline = true
-            SpringAnimatorHelper.attachPressFeedback(this)
+            LiquidGlassPressAnimator.attach(this, LiquidGlassPressAnimator.PressStyle.COMPACT)
             setOnClickListener {
                 setDisplayMode(DisplayMode.FULL_COVER, animate = true, syncScrub = true)
             }
@@ -1957,7 +1958,7 @@ class NowPlayingView(
             minimumHeight = dp(48)
             gravity = Gravity.CENTER
             setPadding(dp(18), dp(10), dp(18), dp(10))
-            SpringAnimatorHelper.attachPressFeedback(this)
+            LiquidGlassPressAnimator.attach(this, LiquidGlassPressAnimator.PressStyle.COMPACT)
             setOnClickListener {
                 val t = audioEngine?.getCurrentTrack() ?: return@setOnClickListener
                 onSearchOnlineLyrics?.invoke(t)
@@ -1972,7 +1973,7 @@ class NowPlayingView(
             minimumHeight = dp(48)
             gravity = Gravity.CENTER
             setPadding(dp(18), dp(10), dp(18), dp(10))
-            SpringAnimatorHelper.attachPressFeedback(this)
+            LiquidGlassPressAnimator.attach(this, LiquidGlassPressAnimator.PressStyle.COMPACT)
             setOnClickListener {
                 val t = audioEngine?.getCurrentTrack() ?: return@setOnClickListener
                 onOpenTapToSync?.invoke(t, plainLyricsFallback)
@@ -2004,7 +2005,7 @@ class NowPlayingView(
             setPadding(dp(18), dp(10), dp(18), dp(10))
             elevation = 8f * density
             visibility = View.GONE
-            SpringAnimatorHelper.attachPressFeedback(this)
+            LiquidGlassPressAnimator.attach(this, LiquidGlassPressAnimator.PressStyle.COMPACT)
             setOnClickListener { resumeLyricsAutoScroll(scrollNow = true) }
         }
 
@@ -2018,7 +2019,7 @@ class NowPlayingView(
             setPadding(dp(13), dp(13), dp(13), dp(13))
             elevation = 6f * density
             visibility = View.GONE
-            SpringAnimatorHelper.attachPressFeedback(this)
+            LiquidGlassPressAnimator.attach(this, LiquidGlassPressAnimator.PressStyle.COMPACT)
             setOnClickListener {
                 lyricTunerState.expand()
                 updateLyricTunerVisibility(animate = true)
@@ -2111,7 +2112,7 @@ class NowPlayingView(
             ellipsize = null
             gravity = Gravity.CENTER
             setPadding(dp(12), dp(6), dp(12), dp(6))
-            SpringAnimatorHelper.attachPressFeedback(this)
+            LiquidGlassPressAnimator.attach(this, LiquidGlassPressAnimator.PressStyle.COMPACT)
             setOnClickListener {
                 val t = audioEngine?.getCurrentTrack()
                 if (t != null) {
@@ -2211,7 +2212,7 @@ class NowPlayingView(
             minimumHeight = dp(44)
             gravity = Gravity.CENTER
             setPadding(dp(8), dp(4), dp(8), dp(4))
-            SpringAnimatorHelper.attachPressFeedback(this)
+            LiquidGlassPressAnimator.attach(this, LiquidGlassPressAnimator.PressStyle.COMPACT)
             setOnClickListener { onClick() }
         }
     }
@@ -2231,7 +2232,7 @@ class NowPlayingView(
             minimumHeight = dp(44)
             gravity = Gravity.CENTER
             setPadding(dp(10), dp(4), dp(10), dp(4))
-            SpringAnimatorHelper.attachPressFeedback(this)
+            LiquidGlassPressAnimator.attach(this, LiquidGlassPressAnimator.PressStyle.COMPACT)
             setOnClickListener { onClick() }
         }
     }
@@ -2376,7 +2377,7 @@ class NowPlayingView(
             contentDescription = context.getString(R.string.cd_favorite)
             scaleType = ImageView.ScaleType.CENTER_INSIDE
             setPadding(dp(12), dp(12), dp(12), dp(12))
-            SpringAnimatorHelper.attachPressFeedback(this)
+            LiquidGlassPressAnimator.attach(this, LiquidGlassPressAnimator.PressStyle.COMPACT)
             setOnClickListener { toggleCurrentFavorite() }
         }
         queueButton.apply {
@@ -2386,7 +2387,7 @@ class NowPlayingView(
             contentDescription = context.getString(R.string.cd_queue)
             scaleType = ImageView.ScaleType.CENTER_INSIDE
             setPadding(dp(12), dp(12), dp(12), dp(12))
-            SpringAnimatorHelper.attachPressFeedback(this)
+            LiquidGlassPressAnimator.attach(this, LiquidGlassPressAnimator.PressStyle.COMPACT)
             setOnClickListener { showQueueOverlay() }
         }
 
@@ -2478,7 +2479,7 @@ class NowPlayingView(
             minimumWidth = dp(48)
             minimumHeight = dp(48)
             setPadding(dp(12), dp(12), dp(12), dp(12))
-            SpringAnimatorHelper.attachPressFeedback(this)
+            LiquidGlassPressAnimator.attach(this, LiquidGlassPressAnimator.PressStyle.COMPACT)
             setOnClickListener {
                 val eng = audioEngine ?: return@setOnClickListener
                 eng.setShuffle(!eng.isShuffleEnabled())
@@ -2494,13 +2495,14 @@ class NowPlayingView(
             minimumWidth = dp(48)
             minimumHeight = dp(48)
             setPadding(dp(10), dp(10), dp(10), dp(10))
-            SpringAnimatorHelper.attachPressFeedback(this)
+            LiquidGlassPressAnimator.attach(this, LiquidGlassPressAnimator.PressStyle.COMPACT)
             setOnClickListener { triggerTrackNavigation(-1) }
         }
         playPauseGlass.setTintProfile(baseFraction = 0.25f, accentFraction = 0.85f, preferAccentGlow = true)
         playPauseButton.apply {
             setImageResource(R.drawable.ic_play)
             background = null
+            foreground = null
             imageTintList = ColorStateList.valueOf(0xFFFFFFFF.toInt())
             contentDescription = context.getString(R.string.cd_play_pause)
             scaleType = ImageView.ScaleType.CENTER_INSIDE
@@ -2518,11 +2520,13 @@ class NowPlayingView(
                         playLoupeController.onTouchDown()
                         SpringAnimatorHelper.cancelSpring(playLoupeView, CHANNEL_PLAY_DRAG)
                         val reduced = SpringAnimatorHelper.isReducedMotionEnabled(context)
+                        v.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
                         animatePlayLoupeScale(
                             if (reduced) 1f else SpringAnimatorHelper.GelPhysicsMath.ACTIVE_LIFT_SCALE,
                             bouncy = false
                         )
                         playPauseGlass.setMotionState(0f, touchActive = true)
+                        playPauseGlass.setPressState(1f, event.x, event.y)
                         playPauseGlass.setFingertipIllumination(event.x, event.y, 1f)
                         SpringAnimatorHelper.broadcastNeighborLightBleed(playLoupeView, event.x, event.y, active = true)
                         v.parent?.requestDisallowInterceptTouchEvent(true)
@@ -2532,6 +2536,7 @@ class NowPlayingView(
                         val dx = event.rawX - playDragDownRawX
                         val dy = event.rawY - playDragDownRawY
                         val reduced = SpringAnimatorHelper.isReducedMotionEnabled(context)
+                        playPauseGlass.setPressTouchPosition(event.x, event.y)
                         playPauseGlass.setFingertipIllumination(event.x, event.y, 1f)
                         SpringAnimatorHelper.broadcastNeighborLightBleed(playLoupeView, event.x, event.y, active = true)
                         if (!isPlayDragging && (abs(dx) > touchSlop || abs(dy) > touchSlop)) {
@@ -2581,6 +2586,7 @@ class NowPlayingView(
                         isPlayDragging = false
                         updateTransportTargetHighlight(0)
                         playPauseGlass.setMotionState(0f, touchActive = false)
+                        playPauseGlass.setPressState(0f, event.x, event.y)
                         playPauseGlass.setGelDeformation(1f, 1f)
                         playPauseGlass.setFingertipIllumination(event.x, event.y, 0f)
                         SpringAnimatorHelper.broadcastNeighborLightBleed(playLoupeView, event.x, event.y, active = false)
@@ -2626,7 +2632,7 @@ class NowPlayingView(
             minimumWidth = dp(48)
             minimumHeight = dp(48)
             setPadding(dp(10), dp(10), dp(10), dp(10))
-            SpringAnimatorHelper.attachPressFeedback(this)
+            LiquidGlassPressAnimator.attach(this, LiquidGlassPressAnimator.PressStyle.COMPACT)
             setOnClickListener { triggerTrackNavigation(1) }
         }
         repeatButton.apply {
@@ -2637,7 +2643,7 @@ class NowPlayingView(
             minimumWidth = dp(48)
             minimumHeight = dp(48)
             setPadding(dp(12), dp(12), dp(12), dp(12))
-            SpringAnimatorHelper.attachPressFeedback(this)
+            LiquidGlassPressAnimator.attach(this, LiquidGlassPressAnimator.PressStyle.COMPACT)
             setOnClickListener {
                 audioEngine?.cycleRepeatMode()
                 updateShuffleAndRepeatState()
@@ -2671,6 +2677,7 @@ class NowPlayingView(
         for ((mode, labelRes, iconRes) in modes) {
             modeSlotViews.add(ModeSlotView(context, mode, context.getString(labelRes), iconRes))
         }
+        modeScrubPill.foreground = null
         modeScrubPill.setSlots(modeSlotViews)
         modeScrubPill.onSlotPreviewChanged = { idx ->
             for (i in 0 until modeSlotViews.size) {
@@ -2702,7 +2709,7 @@ class NowPlayingView(
         utilityTrigger.apply {
             background = utilityTriggerGlass
             contentDescription = context.getString(R.string.cd_utility_menu)
-            SpringAnimatorHelper.attachPressFeedback(this)
+            LiquidGlassPressAnimator.attach(this, LiquidGlassPressAnimator.PressStyle.COMPACT)
             setOnClickListener { showUtilitiesMenu() }
         }
         utilityTriggerIcon.apply {
@@ -2749,7 +2756,7 @@ class NowPlayingView(
             ellipsize = TextUtils.TruncateAt.END
             background = bgDrawable
             setPadding(dp(6), dp(6), dp(6), dp(6))
-            SpringAnimatorHelper.attachPressFeedback(this)
+            LiquidGlassPressAnimator.attach(this, LiquidGlassPressAnimator.PressStyle.COMPACT)
             setOnClickListener { onClick() }
         }
     }
@@ -3288,7 +3295,7 @@ class NowPlayingView(
                 setColor(LiquidGlassDrawable.LayerTokens.nestedCardColor(isDarkMode = true))
                 cornerRadius = 16f * density
             }
-            SpringAnimatorHelper.attachPressFeedback(this)
+            LiquidGlassPressAnimator.attach(this, LiquidGlassPressAnimator.PressStyle.WIDE)
             setOnClickListener { onClick() }
         }
         val icon = ImageView(context).apply {
@@ -3415,7 +3422,7 @@ class NowPlayingView(
                     cornerRadius = 16f * density
                 }
                 setPadding(dp(16), dp(12), dp(16), dp(12))
-                SpringAnimatorHelper.attachPressFeedback(this)
+                LiquidGlassPressAnimator.attach(this, LiquidGlassPressAnimator.PressStyle.WIDE)
                 setOnClickListener {
                     mainHandler.removeCallbacks(sleepDisplayTicker)
                     if (minutes <= 0) {
@@ -3456,7 +3463,7 @@ class NowPlayingView(
                 cornerRadius = 14f * density
             }
             setPadding(dp(16), dp(10), dp(16), dp(10))
-            SpringAnimatorHelper.attachPressFeedback(this)
+            LiquidGlassPressAnimator.attach(this, LiquidGlassPressAnimator.PressStyle.COMPACT)
             setOnClickListener { onClick() }
             layoutParams = LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply {
                 marginStart = dp(8)
@@ -3532,6 +3539,7 @@ class NowPlayingView(
 
             addView(iconView, LayoutParams((15 * density).toInt(), (15 * density).toInt()))
             addView(labelView, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT))
+            LiquidGlassPressAnimator.attach(this, LiquidGlassPressAnimator.PressStyle.COMPACT)
         }
 
         fun setSelectedState(selected: Boolean, palette: CoverPalette) {

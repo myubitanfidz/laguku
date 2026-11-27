@@ -356,6 +356,14 @@ class LiquidGlassDrawable(
         }
     }
 
+    object PressOpticsMath {
+        fun computeSpecularBoost(pressFraction: Float): Float = pressFraction.coerceIn(0f, 1f) * 0.28f
+
+        fun computeRimAlphaBoost(pressFraction: Float): Float = pressFraction.coerceIn(0f, 1f) * 0.36f
+
+        fun computeBezelPressFlex(pressFraction: Float): Float = pressFraction.coerceIn(0f, 1f)
+    }
+
     constructor(
         context: Context,
         cornerRadiusDp: Float = 22f,
@@ -379,6 +387,9 @@ class LiquidGlassDrawable(
     private var specularIntensity: Float = 0f
     private var stretchX: Float = 1f
     private var stretchY: Float = 1f
+    private var pressFraction: Float = 0f
+    private var touchX: Float = 0f
+    private var touchY: Float = 0f
 
     private var illuminationIntensity: Float = 0f
     private var illuminationX: Float = 0f
@@ -418,6 +429,12 @@ class LiquidGlassDrawable(
     private val specularPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeWidth = (rimWidthPx * 1.15f).coerceAtLeast(1.2f)
+        alpha = 0
+    }
+    private val pressRimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = rimWidthPx.coerceAtLeast(1f)
+        color = 0xFFFFFFFF.toInt()
         alpha = 0
     }
     private val illuminationShader = RadialGradient(
@@ -569,7 +586,8 @@ class LiquidGlassDrawable(
                 materialization = materializationProgress.coerceIn(0f, 1f),
                 dispersion = 0.04f,
                 accentColor = resolveEffectiveAgslTintColor(),
-                lightPolarity = if (nextLight) 1f else 0f
+                lightPolarity = if (nextLight) 1f else 0f,
+                pressFactor = PressOpticsMath.computeBezelPressFlex(pressFraction)
             )
         }
         invalidateSelf()
@@ -603,11 +621,57 @@ class LiquidGlassDrawable(
         invalidateSelf()
     }
 
+    fun getPressFraction(): Float = pressFraction
+
+    fun getTouchX(): Float = touchX
+
+    fun getTouchY(): Float = touchY
+
+    fun setPressState(fraction: Float, x: Float = touchX, y: Float = touchY) {
+        val clamped = fraction.coerceIn(0f, 1f)
+        if (abs(pressFraction - clamped) < 0.004f && abs(touchX - x) < 1f && abs(touchY - y) < 1f) return
+        pressFraction = clamped
+        touchX = x
+        touchY = y
+        illuminationX = x
+        illuminationY = y
+        illuminationIntensity = if (accessibilityFlags.reduceMotion || accessibilityFlags.increaseContrast) 0f else clamped
+        updateIlluminationMatrices()
+        syncPressPaints()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            agslBezelHelper?.setPressFactor(PressOpticsMath.computeBezelPressFlex(clamped))
+        }
+        invalidateSelf()
+    }
+
+    fun setPressTouchPosition(x: Float, y: Float) {
+        if (abs(touchX - x) < 1f && abs(touchY - y) < 1f) return
+        touchX = x
+        touchY = y
+        if (pressFraction > 0.005f) {
+            illuminationX = x
+            illuminationY = y
+            updateIlluminationMatrices()
+            invalidateSelf()
+        }
+    }
+
+    private fun syncPressPaints() {
+        val mat = materializationProgress.coerceIn(0f, 1f)
+        val combinedSpecular = (specularIntensity + PressOpticsMath.computeSpecularBoost(pressFraction)).coerceIn(0f, 1f)
+        specularPaint.alpha = (drawableAlpha * combinedSpecular * mat).roundToInt().coerceIn(0, 255)
+        pressRimPaint.alpha = if (accessibilityFlags.increaseContrast) {
+            0
+        } else {
+            (drawableAlpha * PressOpticsMath.computeRimAlphaBoost(pressFraction) * mat).roundToInt().coerceIn(0, 255)
+        }
+    }
+
     fun setSpecularIntensity(intensity: Float) {
         val clamped = intensity.coerceIn(0f, 1f)
         if (abs(specularIntensity - clamped) < 0.005f) return
         specularIntensity = clamped
-        specularPaint.alpha = (drawableAlpha * specularIntensity).roundToInt().coerceIn(0, 255)
+        syncPressPaints()
         invalidateSelf()
     }
 
@@ -705,7 +769,7 @@ class LiquidGlassDrawable(
         }
         if (abs(specularIntensity - nextSpecular) >= 0.005f) {
             specularIntensity = nextSpecular
-            specularPaint.alpha = (drawableAlpha * specularIntensity).roundToInt().coerceIn(0, 255)
+            syncPressPaints()
             changed = true
         }
         if (changed) invalidateSelf()
@@ -770,7 +834,10 @@ class LiquidGlassDrawable(
 
         // Layer 4 front: 135-degree Directional Perimeter Rim Light
         canvas.drawRoundRect(rimRect, rimRadius, rimRadius, rimPaint)
-        if (specularIntensity > 0.005f) {
+        if (pressRimPaint.alpha > 0) {
+            canvas.drawRoundRect(rimRect, rimRadius, rimRadius, pressRimPaint)
+        }
+        if (specularPaint.alpha > 0) {
             canvas.drawRoundRect(rimRect, rimRadius, rimRadius, specularPaint)
         }
 
@@ -786,7 +853,7 @@ class LiquidGlassDrawable(
         applyPaletteColors()
         sheenPaint.alpha = clamped
         rimPaint.alpha = clamped
-        specularPaint.alpha = (clamped * specularIntensity).roundToInt().coerceIn(0, 255)
+        syncPressPaints()
         updateIlluminationMatrices()
         invalidateSelf()
     }
@@ -799,6 +866,7 @@ class LiquidGlassDrawable(
         illuminationPaint.colorFilter = colorFilter
         neighborBleedPaint.colorFilter = colorFilter
         rimPaint.colorFilter = colorFilter
+        pressRimPaint.colorFilter = colorFilter
         specularPaint.colorFilter = colorFilter
         invalidateSelf()
     }
@@ -817,9 +885,13 @@ class LiquidGlassDrawable(
             val a = (255f * alphaScale).roundToInt().coerceIn(0, 255)
             fillPaint.color = (a shl 24) or (baseFill and 0x00FFFFFF)
             rimPaint.strokeWidth = (defaultRimWidthPx * 1.5f).coerceAtLeast(2f)
+            pressRimPaint.strokeWidth = rimPaint.strokeWidth
+            syncPressPaints()
             return
         }
         rimPaint.strokeWidth = defaultRimWidthPx
+        pressRimPaint.strokeWidth = defaultRimWidthPx
+        syncPressPaints()
 
         if (accessibilityFlags.reduceTransparency) {
             val a = (255f * LayerTokens.REDUCED_TRANSPARENCY_ALPHA * alphaScale).roundToInt().coerceIn(0, 255)
@@ -941,7 +1013,7 @@ class LiquidGlassDrawable(
             SHEEN_BOTTOM_COLOR,
             Shader.TileMode.CLAMP
         )
-        specularPaint.alpha = (drawableAlpha * specularIntensity * mat).roundToInt().coerceIn(0, 255)
+        syncPressPaints()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && LayerTokens.isRefractionAllowed(accessibilityFlags)) {
             val w = bounds.width().toFloat()
@@ -957,7 +1029,8 @@ class LiquidGlassDrawable(
                 materialization = mat,
                 dispersion = 0.04f,
                 accentColor = resolveEffectiveAgslTintColor(),
-                lightPolarity = if (isLightPolarity) 1f else 0f
+                lightPolarity = if (isLightPolarity) 1f else 0f,
+                pressFactor = PressOpticsMath.computeBezelPressFlex(pressFraction)
             )
         } else {
             bezelLensingPaint.shader = null
@@ -982,6 +1055,10 @@ class LiquidGlassDrawable(
     private class AgslBezelHelper {
         private val shader = RuntimeShader(AGSL_BEZEL_SHADER)
 
+        fun setPressFactor(pressFactor: Float) {
+            shader.setFloatUniform("uPressFactor", pressFactor.coerceIn(0f, 1f))
+        }
+
         fun updateAndGetShader(
             width: Float,
             height: Float,
@@ -990,7 +1067,8 @@ class LiquidGlassDrawable(
             materialization: Float,
             dispersion: Float,
             accentColor: Int,
-            lightPolarity: Float
+            lightPolarity: Float,
+            pressFactor: Float
         ): RuntimeShader {
             shader.setFloatUniform("uResolution", width.coerceAtLeast(1f), height.coerceAtLeast(1f))
             shader.setFloatUniform("uCornerRadius", cornerRadius.coerceAtLeast(0f))
@@ -1005,6 +1083,7 @@ class LiquidGlassDrawable(
                 1f
             )
             shader.setFloatUniform("uLightPolarity", lightPolarity)
+            shader.setFloatUniform("uPressFactor", pressFactor.coerceIn(0f, 1f))
             return shader
         }
 
@@ -1017,6 +1096,7 @@ class LiquidGlassDrawable(
                 uniform float uDispersion;
                 uniform float4 uTintColor;
                 uniform float uLightPolarity;
+                uniform float uPressFactor;
 
                 half4 main(float2 fragCoord) {
                     float2 halfSize = uResolution * 0.5;
@@ -1025,13 +1105,14 @@ class LiquidGlassDrawable(
                     float2 q = abs(p) - (halfSize - r);
                     float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
                     float inside = max(-d, 0.0);
+                    float effBezel = uBezelWidth * (1.0 + 0.18 * uPressFactor);
 
                     // centerWarp = false: keep interior text crystal sharp
-                    if (inside <= 0.0 || inside >= uBezelWidth || uMaterialization <= 0.001) {
+                    if (inside <= 0.0 || inside >= effBezel || uMaterialization <= 0.001) {
                         return half4(0.0);
                     }
 
-                    float t = clamp(1.0 - (inside / uBezelWidth), 0.0, 1.0);
+                    float t = clamp(1.0 - (inside / effBezel), 0.0, 1.0);
                     float m = t * t * (3.0 - 2.0 * t);
 
                     // Surface normal approximation for 135-degree directional light
@@ -1043,7 +1124,7 @@ class LiquidGlassDrawable(
                     float gBand = m;
                     float bBand = clamp(m * (1.0 - uDispersion), 0.0, 1.0);
 
-                    float baseIntensity = mix(0.24, 0.36, uLightPolarity) * uMaterialization;
+                    float baseIntensity = mix(0.24, 0.36, uLightPolarity) * (1.0 + 0.35 * uPressFactor) * uMaterialization;
                     float3 prism = float3(
                         mix(uTintColor.r, 1.0, 0.68) * rBand,
                         mix(uTintColor.g, 1.0, 0.72) * gBand,

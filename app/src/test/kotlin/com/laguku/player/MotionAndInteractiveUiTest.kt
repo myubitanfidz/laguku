@@ -2,7 +2,9 @@ package com.laguku.player
 
 import com.laguku.player.data.PlaybackStateStore
 import com.laguku.player.ui.glass.InteractiveGlassScrubView
+import com.laguku.player.ui.glass.LiquidGlassDrawable
 import com.laguku.player.ui.library.LibraryView
+import com.laguku.player.ui.motion.LiquidGlassPressAnimator
 import com.laguku.player.ui.motion.SpringAnimatorHelper
 import com.laguku.player.ui.player.LyricMotionSpec
 import com.laguku.player.ui.player.LyricsRecyclerAdapter
@@ -673,5 +675,83 @@ class MotionAndInteractiveUiTest {
         val stageBody = npSource.substringAfter("private fun buildCenterStage(").substringBefore("vinylDiscView.apply")
         assertFalse(Regex("""elevation\s*=\s*[1-9]""").containsMatchIn(stageBody))
         assertTrue(stageBody.contains("coverAuraView"))
+    }
+
+    @Test
+    fun liquidGlassPressAnimator_compressesTo092And095AndRecoversOnUpAndCancel() {
+        assertEquals(0.92f, LiquidGlassPressAnimator.COMPACT_PRESS_SCALE, 0.0001f)
+        assertEquals(0.95f, LiquidGlassPressAnimator.WIDE_PRESS_SCALE, 0.0001f)
+        assertEquals(500f, LiquidGlassPressAnimator.PRESS_STIFFNESS, 0.0001f)
+        assertEquals(0.72f, LiquidGlassPressAnimator.PRESS_DAMPING_RATIO, 0.0001f)
+        assertEquals(380f, LiquidGlassPressAnimator.RELEASE_STIFFNESS, 0.0001f)
+        assertEquals(0.66f, LiquidGlassPressAnimator.RELEASE_DAMPING_RATIO, 0.0001f)
+
+        for ((style, expectedScale) in listOf(
+            LiquidGlassPressAnimator.PressStyle.COMPACT to 0.92f,
+            LiquidGlassPressAnimator.PressStyle.WIDE to 0.95f
+        )) {
+            val state = LiquidGlassPressAnimator.PressPhysicsState(style)
+            state.onActionDown(42f, 18f)
+            assertEquals(expectedScale, state.targetScale, 0.0001f)
+            assertEquals(1f, state.targetPressFraction, 0.0001f)
+
+            val downSolver = SpringAnimatorHelper.SpringSolver(
+                value = 1f,
+                target = state.targetScale,
+                stiffness = state.activeStiffness,
+                dampingRatio = state.activeDampingRatio
+            )
+            var downSettled = false
+            var ticks = 0
+            while (!downSettled && ticks < 400) {
+                downSettled = downSolver.step(1f / 60f)
+                ticks++
+            }
+            assertTrue(downSettled)
+            assertEquals(expectedScale, downSolver.value, 0.0001f)
+
+            state.onActionUp()
+            assertEquals(1.0f, state.targetScale, 0.0001f)
+            assertEquals(0f, state.targetPressFraction, 0.0001f)
+
+            val upSolver = SpringAnimatorHelper.SpringSolver(
+                value = downSolver.value,
+                target = state.targetScale,
+                stiffness = state.activeStiffness,
+                dampingRatio = state.activeDampingRatio
+            )
+            var upSettled = false
+            ticks = 0
+            while (!upSettled && ticks < 400) {
+                upSettled = upSolver.step(1f / 60f)
+                ticks++
+            }
+            assertTrue(upSettled)
+            assertEquals(1.0f, upSolver.value, 0.0001f)
+
+            state.onActionDown(10f, 12f)
+            state.onActionCancel()
+            assertEquals(1.0f, state.targetScale, 0.0001f)
+            assertEquals(0f, state.targetPressFraction, 0.0001f)
+        }
+    }
+
+    @Test
+    fun liquidGlassDrawable_pressOpticsBoostSpecularRimAndBezelFlex() {
+        assertEquals(0f, LiquidGlassDrawable.PressOpticsMath.computeSpecularBoost(0f), 0.0001f)
+        assertEquals(0f, LiquidGlassDrawable.PressOpticsMath.computeRimAlphaBoost(0f), 0.0001f)
+        assertEquals(0f, LiquidGlassDrawable.PressOpticsMath.computeBezelPressFlex(0f), 0.0001f)
+        assertTrue(LiquidGlassDrawable.PressOpticsMath.computeSpecularBoost(1f) > LiquidGlassDrawable.PressOpticsMath.computeSpecularBoost(0.5f))
+        assertTrue(LiquidGlassDrawable.PressOpticsMath.computeRimAlphaBoost(1f) > LiquidGlassDrawable.PressOpticsMath.computeRimAlphaBoost(0.5f))
+        assertEquals(1f, LiquidGlassDrawable.PressOpticsMath.computeBezelPressFlex(1f), 0.0001f)
+
+        val glass = LiquidGlassDrawable(cornerRadiusPx = 20f, rimWidthPx = 2f)
+        glass.setPressState(1f, 36f, 24f)
+        assertEquals(1f, glass.getPressFraction(), 0.0001f)
+        assertEquals(36f, glass.getTouchX(), 0.0001f)
+        assertEquals(24f, glass.getTouchY(), 0.0001f)
+
+        glass.setPressState(0f, 36f, 24f)
+        assertEquals(0f, glass.getPressFraction(), 0.0001f)
     }
 }

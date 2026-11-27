@@ -21,6 +21,7 @@ import com.laguku.player.service.MediaAction
 import com.laguku.player.service.MorningAlarmConfig
 import com.laguku.player.ui.glass.CoverPaletteExtractor
 import com.laguku.player.ui.glass.LiquidGlassDrawable
+import com.laguku.player.ui.motion.LiquidGlassPressAnimator
 import com.laguku.player.ui.motion.SpringAnimatorHelper
 
 /**
@@ -277,7 +278,7 @@ class LibraryUtilitiesSheetView(
                 cornerRadius = 14f * density
             }
             setPadding(dp(14), dp(8), dp(14), dp(8))
-            SpringAnimatorHelper.attachPressFeedback(this)
+            LiquidGlassPressAnimator.attach(this, LiquidGlassPressAnimator.PressStyle.COMPACT)
             setOnClickListener { onDismiss() }
         }
         headerRow.addView(titleTv, LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f))
@@ -330,7 +331,7 @@ class LibraryUtilitiesSheetView(
                 cornerRadius = 16f * density
             }
             setPadding(dp(10), dp(6), dp(10), dp(6))
-            SpringAnimatorHelper.attachPressFeedback(this)
+            LiquidGlassPressAnimator.attach(this, LiquidGlassPressAnimator.PressStyle.WIDE)
             setOnClickListener { onClick() }
         }
     }

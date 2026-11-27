@@ -45,6 +45,7 @@ import com.laguku.player.model.Track
 import com.laguku.player.ui.glass.CoverPaletteExtractor
 import com.laguku.player.ui.glass.InteractiveGlassScrubView
 import com.laguku.player.ui.glass.LiquidGlassDrawable
+import com.laguku.player.ui.motion.LiquidGlassPressAnimator
 import com.laguku.player.ui.motion.SpringAnimatorHelper
 import java.io.File
 import java.util.concurrent.Executors
@@ -554,7 +555,7 @@ class LibraryView(
             }
             clipToOutline = true
             setPadding(dp(16), dp(16), dp(16), dp(16))
-            SpringAnimatorHelper.attachPressFeedback(this)
+            LiquidGlassPressAnimator.attach(this, LiquidGlassPressAnimator.PressStyle.COMPACT)
             setOnClickListener { toggleSearchBar() }
         }
         bottomNavRow.addView(
@@ -600,7 +601,7 @@ class LibraryView(
             clipToOutline = true
             setPadding(dp(14), dp(8), dp(14), dp(8))
             visibility = View.GONE
-            SpringAnimatorHelper.attachPressFeedback(this)
+            LiquidGlassPressAnimator.attach(this, LiquidGlassPressAnimator.PressStyle.COMPACT)
             setOnClickListener {
                 drillDownTitle = null
                 drillDownTracks = null
@@ -617,7 +618,7 @@ class LibraryView(
             outlineProvider = pillOutlineProvider
             clipToOutline = true
             setPadding(dp(14), dp(8), dp(14), dp(8))
-            SpringAnimatorHelper.attachPressFeedback(this)
+            LiquidGlassPressAnimator.attach(this, LiquidGlassPressAnimator.PressStyle.WIDE)
             setOnClickListener {
                 val targetTracks = drillDownTracks ?: allTracks
                 if (targetTracks.isNotEmpty()) {
@@ -652,7 +653,7 @@ class LibraryView(
             clipToOutline = true
             contentDescription = context.getString(R.string.utilities_short)
             setPadding(dp(12), dp(8), dp(12), dp(8))
-            SpringAnimatorHelper.attachPressFeedback(this)
+            LiquidGlassPressAnimator.attach(this, LiquidGlassPressAnimator.PressStyle.COMPACT)
             setOnClickListener { callbacks.onOpenUtilitiesClicked() }
         }
         utilitiesIcon.apply {
@@ -708,7 +709,7 @@ class LibraryView(
                 setTintProfile(0.35f, 0.65f, preferAccentGlow = true)
             }
             setPadding(dp(20), dp(10), dp(20), dp(10))
-            SpringAnimatorHelper.attachPressFeedback(this)
+            LiquidGlassPressAnimator.attach(this, LiquidGlassPressAnimator.PressStyle.WIDE)
             setOnClickListener { callbacks.onRequestStoragePermission() }
         }
         permissionCard.addView(title)
@@ -727,7 +728,7 @@ class LibraryView(
                 }
             }
             clipToOutline = true
-            SpringAnimatorHelper.attachPressFeedback(this)
+            LiquidGlassPressAnimator.attach(this, LiquidGlassPressAnimator.PressStyle.WIDE, miniPlayerGlass)
             setOnClickListener { callbacks.onOpenNowPlaying() }
         }
 
@@ -789,7 +790,7 @@ class LibraryView(
             minimumWidth = dp(48)
             minimumHeight = dp(48)
             setPadding(dp(12), dp(12), dp(12), dp(12))
-            SpringAnimatorHelper.attachPressFeedback(this)
+            LiquidGlassPressAnimator.attach(this, LiquidGlassPressAnimator.PressStyle.COMPACT)
             setOnClickListener { callbacks.onTogglePlayPause() }
         }
 
@@ -817,6 +818,7 @@ class LibraryView(
         for ((tab, titleRes, iconRes) in tabsSpec) {
             tabViews.add(TabItemView(context, tab, context.getString(titleRes), iconRes))
         }
+        bottomScrubBar.foreground = null
         bottomScrubBar.setNeutralLensMode(true)
         bottomScrubBar.setSlots(tabViews)
         bottomScrubBar.onSlotPreviewChanged = { idx ->
@@ -1123,7 +1125,7 @@ class LibraryView(
             ellipsize = TextUtils.TruncateAt.END
             background = LiquidGlassDrawable(context, 16f, palette)
             setPadding(dp(8), dp(8), dp(8), dp(8))
-            SpringAnimatorHelper.attachPressFeedback(this)
+            LiquidGlassPressAnimator.attach(this, LiquidGlassPressAnimator.PressStyle.WIDE)
             setOnClickListener { onClick() }
         }
     }
@@ -1190,6 +1192,7 @@ class LibraryView(
             addView(labelView, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply {
                 topMargin = (2 * density).toInt()
             })
+            LiquidGlassPressAnimator.attach(this, LiquidGlassPressAnimator.PressStyle.COMPACT)
         }
 
         fun setSelectedState(selected: Boolean, palette: CoverPalette) {
@@ -1293,7 +1296,7 @@ class LibraryView(
                 }
                 background = cardBg
                 elevation = 2f * density
-                SpringAnimatorHelper.attachPressFeedback(this)
+                LiquidGlassPressAnimator.attach(this, LiquidGlassPressAnimator.PressStyle.WIDE)
             }
 
             val row = LinearLayout(ctx).apply {
