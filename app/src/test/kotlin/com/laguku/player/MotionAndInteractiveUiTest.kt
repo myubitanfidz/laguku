@@ -620,4 +620,29 @@ class MotionAndInteractiveUiTest {
         assertFalse(updateMiniBody.contains("setBackground"))
         assertFalse(updateMiniBody.contains("GradientDrawable"))
     }
+
+    @Test
+    fun utilityMenuState_opensClosesAndReportsActiveIndicator() {
+        val state = NowPlayingView.UtilityMenuState()
+        assertFalse(state.isOpen)
+        state.open()
+        assertTrue(state.isOpen)
+        state.close()
+        assertFalse(state.isOpen)
+
+        assertFalse(NowPlayingView.UtilityMenuState.hasActiveIndicator(dspActive = false, timerActive = false, amoledEnabled = false))
+        assertTrue(NowPlayingView.UtilityMenuState.hasActiveIndicator(dspActive = true, timerActive = false, amoledEnabled = false))
+        assertTrue(NowPlayingView.UtilityMenuState.hasActiveIndicator(dspActive = false, timerActive = true, amoledEnabled = false))
+        assertTrue(NowPlayingView.UtilityMenuState.hasActiveIndicator(dspActive = false, timerActive = false, amoledEnabled = true))
+    }
+
+    @Test
+    fun nowPlaying_hasSingleUtilityTriggerInsteadOfThreePills() {
+        val npSource = File("src/main/kotlin/com/laguku/player/ui/player/NowPlayingView.kt").readText()
+        assertFalse(npSource.contains("labPill"))
+        assertFalse(npSource.contains("timerPill"))
+        assertFalse(npSource.contains("amoledPill"))
+        assertTrue(npSource.contains("showUtilitiesMenu"))
+        assertTrue(npSource.contains("utilityTrigger"))
+    }
 }

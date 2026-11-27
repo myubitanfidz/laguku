@@ -35,7 +35,6 @@
 
     <!-- Secondary Dock & Modals -->
     <string name="eq_short">Equalizer</string>
-    <string name="timer_short">Timer</string>
     <string name="eq_title">Equalizer 5-Band</string>
     <string name="eq_enabled">Aktif</string>
     <string name="eq_disabled">Nonaktif</string>
@@ -86,7 +85,8 @@
     <!-- Wave 3 Seamless UI & Bottom Sheets -->
     <string name="mode_disc_short">Disk</string>
     <string name="audio_lab_short">Audio Lab</string>
-    <string name="amoled_short">AMOLED</string>
+    <string name="utility_menu_title">Kontrol Audio</string>
+    <string name="cd_utility_menu">Menu kontrol audio</string>
     <string name="utilities_short">Utilitas</string>
     <string name="lyric_offset_save">Simpan</string>
     <string name="cd_lyric_tuner">Atur Sinkron &amp; Posisi Lirik</string>

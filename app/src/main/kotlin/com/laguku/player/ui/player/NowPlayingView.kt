@@ -73,7 +73,7 @@ import kotlin.math.sin
  *   1) Title, artist, Favorit & Antrean (>= 48dp)
  *   2) SeekCapsuleView (glass waveform, AB-loop indicator, chapter ticks, tabular timestamps)
  *   3) 5 Transport Controls
- *   4) Interactive 3-Mode Glass Scrub Pill (Sampul / Disk / Lirik) + 3 Utility Pills (Audio Lab, Timer, AMOLED).
+ *   4) Interactive 3-Mode Glass Scrub Pill (Sampul / Disk / Lirik) + Single Utility Menu Trigger.
  */
 @SuppressLint("ViewConstructor")
 class NowPlayingView(
@@ -427,6 +427,27 @@ class NowPlayingView(
         const val ARTIST_SIZE_SP = 14f
         const val ARTIST_ALPHA = 0.72f
         const val ARTIST_TEXT_COLOR = 0xB8FFFFFF.toInt() // white @ 0.72; view alpha is animated on track change
+    }
+
+    class UtilityMenuState {
+        var isOpen: Boolean = false
+            private set
+
+        fun open() {
+            isOpen = true
+        }
+
+        fun close() {
+            isOpen = false
+        }
+
+        companion object {
+            fun hasActiveIndicator(
+                dspActive: Boolean,
+                timerActive: Boolean,
+                amoledEnabled: Boolean
+            ): Boolean = dspActive || timerActive || amoledEnabled
+        }
     }
 
     object AmbientMeshMath {
@@ -871,22 +892,14 @@ class NowPlayingView(
     private val modeScrubPill = InteractiveGlassScrubView(context, 20f)
     private val modeSlotViews = ArrayList<ModeSlotView>(3)
 
-    // Dock Row 5: 3 Utility Glass Pills (Audio Lab, Timer, AMOLED)
+    // Dock Row 5: Single Utility Glass Trigger (Audio Lab, Timer, AMOLED popover)
     private val secondaryDockRow = LinearLayout(context)
-    private val labPill = LinearLayout(context)
-    private val labPillIcon = ImageView(context)
-    private val labPillText = TextView(context)
-    private val labPillGlass = LiquidGlassDrawable(context, 18f)
-
-    private val timerPill = LinearLayout(context)
-    private val timerPillIcon = ImageView(context)
-    private val timerPillText = TextView(context)
-    private val timerPillGlass = LiquidGlassDrawable(context, 18f)
-
-    private val amoledPill = LinearLayout(context)
-    private val amoledPillIcon = ImageView(context)
-    private val amoledPillText = TextView(context)
-    private val amoledPillGlass = LiquidGlassDrawable(context, 18f)
+    private val utilityTrigger = FrameLayout(context)
+    private val utilityTriggerIcon = ImageView(context)
+    private val utilityTriggerGlass = LiquidGlassDrawable(context, 24f)
+    private val utilityDotView = View(context)
+    private val utilityDotBg = GradientDrawable().apply { shape = GradientDrawable.OVAL }
+    private val utilityMenuState = UtilityMenuState()
 
     // Modal Overlays (Sleep Timer, Antrean/Queue)
     private val modalBackdrop = FrameLayout(context)
@@ -949,7 +962,7 @@ class NowPlayingView(
         }
     }
 
-    fun getAudioLabAnchorView(): View = labPill
+    fun getAudioLabAnchorView(): View = utilityTrigger
 
     fun getTapToSyncAnchorView(): View = when {
         lyricTunerPanel.visibility == View.VISIBLE -> lyricTunerPanel
@@ -1123,9 +1136,7 @@ class NowPlayingView(
         dockIconGlassQueue.setAmoledProgress(amoledProgress)
         metadataGlass.setAmoledProgress(amoledProgress)
         playPauseGlass.setAmoledProgress(amoledProgress)
-        labPillGlass.setAmoledProgress(amoledProgress)
-        timerPillGlass.setAmoledProgress(amoledProgress)
-        amoledPillGlass.setAmoledProgress(amoledProgress)
+        utilityTriggerGlass.setAmoledProgress(amoledProgress)
         modalCardGlass.setAmoledProgress(amoledProgress)
         modeScrubPill.invalidate()
     }
@@ -1157,9 +1168,7 @@ class NowPlayingView(
         dockIconGlassQueue.setContinuousTransparency(level)
         metadataGlass.setContinuousTransparency(level)
         playPauseGlass.setContinuousTransparency(level)
-        labPillGlass.setContinuousTransparency(level)
-        timerPillGlass.setContinuousTransparency(level)
-        amoledPillGlass.setContinuousTransparency(level)
+        utilityTriggerGlass.setContinuousTransparency(level)
         modalCardGlass.setContinuousTransparency(level)
         modeScrubPill.setGlassTransparency(level)
     }
@@ -1176,9 +1185,7 @@ class NowPlayingView(
         dockIconGlassQueue.setAccessibilityFlags(flags)
         metadataGlass.setAccessibilityFlags(flags)
         playPauseGlass.setAccessibilityFlags(flags)
-        labPillGlass.setAccessibilityFlags(flags)
-        timerPillGlass.setAccessibilityFlags(flags)
-        amoledPillGlass.setAccessibilityFlags(flags)
+        utilityTriggerGlass.setAccessibilityFlags(flags)
         modalCardGlass.setAccessibilityFlags(flags)
         modeScrubPill.setAccessibilityFlags(flags)
     }
@@ -1414,6 +1421,7 @@ class NowPlayingView(
     fun isModalOpen(): Boolean = modalBackdrop.visibility == View.VISIBLE
 
     fun closeModal() {
+        utilityMenuState.close()
         if (modalBackdrop.visibility != View.VISIBLE) return
         SpringAnimatorHelper.springDismiss(modalCard, toTranslationY = dp(24).toFloat(), toScale = 0.96f)
         SpringAnimatorHelper.springDismiss(modalBackdrop, toScale = 1f) {
@@ -2654,85 +2662,40 @@ class NowPlayingView(
             }
         )
 
-        // Dock 5: 3 Utility Glass Pills (Audio Lab, Timer, AMOLED)
+        // Dock 5: Single Compact Glass Utility Trigger (Audio Lab, Sleep Timer, AMOLED)
         secondaryDockRow.apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
         }
-        configureSecondaryPill(
-            container = labPill,
-            iconView = labPillIcon,
-            textView = labPillText,
-            glass = labPillGlass,
-            iconRes = R.drawable.ic_tune,
-            label = context.getString(R.string.audio_lab_short)
-        ) {
-            onOpenAudioLab?.invoke()
+        utilityTrigger.apply {
+            background = utilityTriggerGlass
+            contentDescription = context.getString(R.string.cd_utility_menu)
+            SpringAnimatorHelper.attachPressFeedback(this)
+            setOnClickListener { showUtilitiesMenu() }
         }
-        configureSecondaryPill(
-            container = timerPill,
-            iconView = timerPillIcon,
-            textView = timerPillText,
-            glass = timerPillGlass,
-            iconRes = R.drawable.ic_timer,
-            label = context.getString(R.string.timer_short)
-        ) {
-            showSleepTimerOverlay()
+        utilityTriggerIcon.apply {
+            setImageResource(R.drawable.ic_tune)
+            imageTintList = ColorStateList.valueOf(0xE6FFFFFF.toInt())
+            scaleType = ImageView.ScaleType.CENTER_INSIDE
         }
-        configureSecondaryPill(
-            container = amoledPill,
-            iconView = amoledPillIcon,
-            textView = amoledPillText,
-            glass = amoledPillGlass,
-            iconRes = R.drawable.ic_night,
-            label = context.getString(R.string.amoled_short)
-        ) {
-            onToggleAmoled?.invoke()
+        utilityDotView.apply {
+            background = utilityDotBg
+            visibility = View.GONE
         }
-
-        secondaryDockRow.addView(labPill, LinearLayout.LayoutParams(0, dp(48), 1.15f).apply { marginEnd = dp(6) })
-        secondaryDockRow.addView(timerPill, LinearLayout.LayoutParams(0, dp(48), 0.95f).apply { marginEnd = dp(6) })
-        secondaryDockRow.addView(amoledPill, LinearLayout.LayoutParams(0, dp(48), 0.95f))
+        utilityTrigger.addView(utilityTriggerIcon, LayoutParams(dp(22), dp(22), Gravity.CENTER))
+        utilityTrigger.addView(
+            utilityDotView,
+            LayoutParams(dp(7), dp(7), Gravity.TOP or Gravity.END).apply {
+                topMargin = dp(9)
+                marginEnd = dp(14)
+            }
+        )
+        secondaryDockRow.addView(utilityTrigger, LinearLayout.LayoutParams(dp(64), dp(48)))
 
         bottomControlDock.addView(
             secondaryDockRow,
             LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT)
         )
-    }
-
-    private fun configureSecondaryPill(
-        container: LinearLayout,
-        iconView: ImageView,
-        textView: TextView,
-        glass: LiquidGlassDrawable,
-        iconRes: Int,
-        label: String,
-        onClick: () -> Unit
-    ) {
-        container.apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-            background = glass
-            minimumHeight = dp(48)
-            setPadding(dp(8), dp(8), dp(8), dp(8))
-            SpringAnimatorHelper.attachPressFeedback(this)
-            setOnClickListener { onClick() }
-        }
-        iconView.apply {
-            setImageResource(iconRes)
-            imageTintList = ColorStateList.valueOf(0xE6FFFFFF.toInt())
-        }
-        textView.apply {
-            text = label
-            setTextColor(0xE6FFFFFF.toInt())
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
-            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            maxLines = 1
-            ellipsize = TextUtils.TruncateAt.END
-            setPadding(dp(5), 0, 0, 0)
-        }
-        container.addView(iconView, LinearLayout.LayoutParams(dp(16), dp(16)))
-        container.addView(textView, LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT))
     }
 
     private fun configureAbTempoChip(
@@ -3148,42 +3111,19 @@ class NowPlayingView(
 
         val dspActive = audioEngine?.isTenBandEqEnabled() == true ||
             (audioEngine?.getDspConfig()?.crossfeedLevel ?: 0f) > 0.01f
-        labPillGlass.setTintProfile(
-            baseFraction = 0.56f,
-            accentFraction = if (dspActive) 0.38f else 0.10f,
-            preferAccentGlow = dspActive
-        )
-        labPillIcon.imageTintList = ColorStateList.valueOf(
-            if (dspActive) palette.accentGlow else 0xE6FFFFFF.toInt()
-        )
-        labPillText.setTextColor(if (dspActive) palette.accentGlow else 0xE6FFFFFF.toInt())
-
         val remMs = sleepTimerEndElapsedMs - SystemClock.elapsedRealtime()
         val timerActive = remMs > 0L
-        timerPillText.text = if (timerActive) {
-            "${ceil(remMs / 60_000.0).toInt().coerceAtLeast(1)}m"
-        } else {
-            context.getString(R.string.timer_short)
-        }
-        timerPillGlass.setTintProfile(
+        val anyActive = UtilityMenuState.hasActiveIndicator(dspActive, timerActive, amoledEnabled)
+        utilityTriggerGlass.setTintProfile(
             baseFraction = 0.56f,
-            accentFraction = 0.10f,
-            preferAccentGlow = false
+            accentFraction = if (anyActive) 0.22f else 0.10f,
+            preferAccentGlow = anyActive
         )
-        timerPillIcon.imageTintList = ColorStateList.valueOf(
-            if (timerActive) palette.accentGlow else 0xE6FFFFFF.toInt()
+        utilityTriggerIcon.imageTintList = ColorStateList.valueOf(
+            if (anyActive) palette.accentGlow else 0xE6FFFFFF.toInt()
         )
-        timerPillText.setTextColor(if (timerActive) palette.accentGlow else 0xE6FFFFFF.toInt())
-
-        amoledPillGlass.setTintProfile(
-            baseFraction = 0.56f,
-            accentFraction = 0.10f,
-            preferAccentGlow = false
-        )
-        amoledPillIcon.imageTintList = ColorStateList.valueOf(
-            if (amoledEnabled) palette.accentGlow else 0xE6FFFFFF.toInt()
-        )
-        amoledPillText.setTextColor(if (amoledEnabled) palette.accentGlow else 0xE6FFFFFF.toInt())
+        utilityDotBg.setColor(palette.accentGlow)
+        utilityDotView.visibility = if (anyActive) View.VISIBLE else View.GONE
     }
 
     private fun applyPalette(newPalette: CoverPalette) {
@@ -3208,9 +3148,7 @@ class NowPlayingView(
         metadataGlass.setTintProfile(baseFraction = 0.56f, accentFraction = 0.12f)
         playPauseGlass.setPalette(newPalette)
         modeScrubPill.setPalette(newPalette)
-        labPillGlass.setPalette(newPalette)
-        timerPillGlass.setPalette(newPalette)
-        amoledPillGlass.setPalette(newPalette)
+        utilityTriggerGlass.setPalette(newPalette)
         lyricTunerPanelGlass.setSurfaceScale(LiquidGlassDrawable.GlassSurfaceScale.LARGE)
         modalCardGlass.setPalette(newPalette)
         modalCardGlass.setSurfaceScale(LiquidGlassDrawable.GlassSurfaceScale.LARGE)
@@ -3227,12 +3165,127 @@ class NowPlayingView(
         updateAbAndTempoUi()
     }
 
-    private fun revealModal() {
+    private fun revealModal(
+        stiffness: Float = SpringAnimatorHelper.SPRING_STIFFNESS,
+        dampingRatio: Float = SpringAnimatorHelper.SPRING_DAMPING_RATIO
+    ) {
         SpringAnimatorHelper.springReveal(modalBackdrop, fromScale = 1f)
-        SpringAnimatorHelper.springReveal(modalCard, fromTranslationY = dp(28).toFloat(), fromScale = 0.96f)
+        SpringAnimatorHelper.springReveal(
+            modalCard,
+            fromTranslationY = dp(28).toFloat(),
+            fromScale = 0.96f,
+            stiffness = stiffness,
+            dampingRatio = dampingRatio
+        )
+    }
+
+    private fun showUtilitiesMenu() {
+        modalBody.removeAllViews()
+        modalActionsRow.removeAllViews()
+        modalTitleView.text = context.getString(R.string.utility_menu_title)
+
+        val dspActive = audioEngine?.isTenBandEqEnabled() == true ||
+            (audioEngine?.getDspConfig()?.crossfeedLevel ?: 0f) > 0.01f
+        val remMs = sleepTimerEndElapsedMs - SystemClock.elapsedRealtime()
+        val timerActive = remMs > 0L
+        val timerStatus = if (timerActive) {
+            context.getString(R.string.timer_active_fmt, ceil(remMs / 60_000.0).toInt().coerceAtLeast(1))
+        } else {
+            context.getString(R.string.timer_off)
+        }
+
+        val (labRow, _) = createUtilityRow(
+            iconRes = R.drawable.ic_tune,
+            label = context.getString(R.string.audio_lab_short),
+            status = context.getString(if (dspActive) R.string.eq_enabled else R.string.eq_disabled),
+            active = dspActive
+        ) {
+            closeModal()
+            onOpenAudioLab?.invoke()
+        }
+        val (timerRow, _) = createUtilityRow(
+            iconRes = R.drawable.ic_timer,
+            label = context.getString(R.string.timer_title),
+            status = timerStatus,
+            active = timerActive
+        ) {
+            showSleepTimerOverlay()
+        }
+        lateinit var amoledStatusTv: TextView
+        val (amoledRow, createdAmoledStatusTv) = createUtilityRow(
+            iconRes = R.drawable.ic_night,
+            label = context.getString(R.string.shortcut_amoled_short),
+            status = context.getString(if (amoledEnabled) R.string.eq_enabled else R.string.eq_disabled),
+            active = amoledEnabled
+        ) {
+            onToggleAmoled?.invoke()
+            amoledStatusTv.text = context.getString(if (amoledEnabled) R.string.eq_enabled else R.string.eq_disabled)
+            amoledStatusTv.setTextColor(if (amoledEnabled) palette.accentGlow else 0xB8FFFFFF.toInt())
+        }
+        amoledStatusTv = createdAmoledStatusTv
+
+        val rowLp = { LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(8) } }
+        modalBody.addView(labRow, rowLp())
+        modalBody.addView(timerRow, rowLp())
+        modalBody.addView(amoledRow, rowLp())
+        modalActionsRow.addView(createModalActionButton(context.getString(R.string.eq_close)) { closeModal() })
+
+        utilityMenuState.open()
+        val profile = if (SpringAnimatorHelper.isReducedMotionEnabled(context)) {
+            SpringAnimatorHelper.SPRING_REDUCED_MOTION
+        } else {
+            SpringAnimatorHelper.SPRING_SNAPPY
+        }
+        revealModal(stiffness = profile.stiffness, dampingRatio = profile.dampingRatio)
+    }
+
+    private fun createUtilityRow(
+        iconRes: Int,
+        label: String,
+        status: String,
+        active: Boolean,
+        onClick: () -> Unit
+    ): Pair<View, TextView> {
+        val row = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            minimumHeight = dp(56)
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+            background = GradientDrawable().apply {
+                setColor(LiquidGlassDrawable.LayerTokens.nestedCardColor(isDarkMode = true))
+                cornerRadius = 16f * density
+            }
+            SpringAnimatorHelper.attachPressFeedback(this)
+            setOnClickListener { onClick() }
+        }
+        val icon = ImageView(context).apply {
+            setImageResource(iconRes)
+            imageTintList = ColorStateList.valueOf(if (active) palette.accentGlow else 0xE6FFFFFF.toInt())
+            scaleType = ImageView.ScaleType.CENTER_INSIDE
+        }
+        val labelTv = TextView(context).apply {
+            text = label
+            setTextColor(0xFFFFFFFF.toInt())
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+        }
+        val statusTv = TextView(context).apply {
+            text = status
+            setTextColor(if (active) palette.accentGlow else 0xB8FFFFFF.toInt())
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            maxLines = 1
+        }
+        row.addView(icon, LinearLayout.LayoutParams(dp(20), dp(20)).apply { marginEnd = dp(12) })
+        row.addView(labelTv, LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f).apply { marginEnd = dp(8) })
+        row.addView(statusTv, LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT))
+        return row to statusTv
     }
 
     private fun showQueueOverlay() {
+        utilityMenuState.close()
         modalBody.removeAllViews()
         modalActionsRow.removeAllViews()
         modalTitleView.text = context.getString(R.string.queue_title)
@@ -3291,6 +3344,7 @@ class NowPlayingView(
     }
 
     private fun showSleepTimerOverlay() {
+        utilityMenuState.close()
         val eng = audioEngine ?: return
         modalBody.removeAllViews()
         modalActionsRow.removeAllViews()
