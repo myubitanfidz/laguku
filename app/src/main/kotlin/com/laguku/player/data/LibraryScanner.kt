@@ -2,8 +2,11 @@ package com.laguku.player.data
 
 import android.content.ContentUris
 import android.content.Context
+import android.media.MediaMetadataRetriever
 import android.media.MediaScannerConnection
+import android.net.Uri
 import android.provider.MediaStore
+import android.provider.OpenableColumns
 import com.laguku.player.metadata.BinaryTagReader
 import com.laguku.player.model.AlbumGroup
 import com.laguku.player.model.ArtistGroup
@@ -173,6 +176,163 @@ object LibraryScanner {
                 chapters = tags?.chapters ?: emptyList()
             )
         }
+    }
+
+    fun mergeDirectoryTracks(
+        existing: List<Track>,
+        directoryTracks: List<Track>,
+        directory: File
+    ): List<Track> {
+        val dirPrefix = runCatching { directory.canonicalPath }.getOrDefault(directory.absolutePath)
+            .let { if (it.endsWith(File.separator)) it else "$it${File.separator}" }
+        val dirExact = dirPrefix.dropLast(1)
+
+        val existingByCanonical = HashMap<String, Track>(existing.size)
+        val preserved = ArrayList<Track>(existing.size)
+        for (track in existing) {
+            val canonical = runCatching { File(track.path).canonicalPath }.getOrDefault(track.path)
+            if (canonical.isNotBlank()) existingByCanonical[canonical] = track
+            val inTargetDir = canonical == dirExact || canonical.startsWith(dirPrefix)
+            if (!inTargetDir) {
+                preserved.add(track)
+            }
+        }
+
+        val mergedDir = directoryTracks.map { fresh ->
+            val canonical = runCatching { File(fresh.path).canonicalPath }.getOrDefault(fresh.path)
+            val prev = existingByCanonical[canonical]
+            if (prev != null) {
+                fresh.copy(
+                    id = prev.id,
+                    albumId = if (prev.albumId != 0L) prev.albumId else fresh.albumId,
+                    durationMs = if (fresh.durationMs > 0L) fresh.durationMs else prev.durationMs,
+                    contentUri = fresh.contentUri.ifBlank { prev.contentUri }
+                )
+            } else {
+                fresh
+            }
+        }
+        return (preserved + mergedDir).sortedBy { it.title.lowercase() }
+    }
+
+    fun resolveAudioFile(context: Context, uri: Uri, musicRootDir: File?): File? {
+        if (uri.scheme.equals("file", ignoreCase = true)) {
+            val file = uri.path?.let { File(it) }
+            if (file != null && file.isFile) return file
+        }
+        if (uri.scheme.equals("content", ignoreCase = true)) {
+            val projection = arrayOf(MediaStore.MediaColumns.DATA, OpenableColumns.DISPLAY_NAME)
+            var dataPath: String? = null
+            var displayName: String? = null
+            runCatching {
+                context.contentResolver.query(uri, projection, null, null, null)?.use { c ->
+                    if (c.moveToFirst()) {
+                        val dataIdx = c.getColumnIndex(MediaStore.MediaColumns.DATA)
+                        if (dataIdx >= 0) dataPath = c.getString(dataIdx)
+                        val nameIdx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                        if (nameIdx >= 0) displayName = c.getString(nameIdx)
+                    }
+                }
+            }
+            val direct = dataPath?.takeIf { it.isNotBlank() }?.let { File(it) }
+            if (direct != null && direct.isFile) return direct
+            val cleanName = displayName?.takeIf { it.isNotBlank() }
+                ?: uri.lastPathSegment?.substringAfterLast('/')
+            if (cleanName != null && musicRootDir != null) {
+                val lagukuSibling = File(File(musicRootDir, "Laguku"), cleanName)
+                if (lagukuSibling.isFile) return lagukuSibling
+            }
+        }
+        return null
+    }
+
+    fun buildTrackFromUri(context: Context, uri: Uri, musicRootDir: File?): Track? {
+        val resolvedFile = resolveAudioFile(context, uri, musicRootDir)
+        var mediaTitle: String? = null
+        var mediaArtist: String? = null
+        var mediaAlbum: String? = null
+        var mediaDuration = 0L
+        var displayName: String? = null
+
+        if (uri.scheme.equals("content", ignoreCase = true)) {
+            runCatching {
+                val cols = arrayOf(
+                    MediaStore.Audio.Media.TITLE,
+                    MediaStore.Audio.Media.ARTIST,
+                    MediaStore.Audio.Media.ALBUM,
+                    MediaStore.Audio.Media.DURATION,
+                    OpenableColumns.DISPLAY_NAME
+                )
+                context.contentResolver.query(uri, cols, null, null, null)?.use { c ->
+                    if (c.moveToFirst()) {
+                        c.getColumnIndex(MediaStore.Audio.Media.TITLE).takeIf { it >= 0 }?.let { mediaTitle = c.getString(it) }
+                        c.getColumnIndex(MediaStore.Audio.Media.ARTIST).takeIf { it >= 0 }?.let { mediaArtist = c.getString(it) }
+                        c.getColumnIndex(MediaStore.Audio.Media.ALBUM).takeIf { it >= 0 }?.let { mediaAlbum = c.getString(it) }
+                        c.getColumnIndex(MediaStore.Audio.Media.DURATION).takeIf { it >= 0 }?.let { mediaDuration = c.getLong(it).coerceAtLeast(0L) }
+                        c.getColumnIndex(OpenableColumns.DISPLAY_NAME).takeIf { it >= 0 }?.let { displayName = c.getString(it) }
+                    }
+                }
+            }
+        }
+
+        if (mediaDuration <= 0L) {
+            val retriever = MediaMetadataRetriever()
+            try {
+                if (resolvedFile != null && resolvedFile.canRead()) {
+                    retriever.setDataSource(resolvedFile.absolutePath)
+                } else {
+                    retriever.setDataSource(context, uri)
+                }
+                mediaDuration = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                    ?.toLongOrNull()?.coerceAtLeast(0L) ?: 0L
+                if (mediaTitle.isNullOrBlank()) {
+                    mediaTitle = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE)
+                }
+                if (mediaArtist.isNullOrBlank()) {
+                    mediaArtist = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST)
+                }
+                if (mediaAlbum.isNullOrBlank()) {
+                    mediaAlbum = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUM)
+                }
+            } catch (_: Throwable) {
+            } finally {
+                runCatching { retriever.release() }
+            }
+        }
+
+        val tags = resolvedFile?.takeIf { it.canRead() }?.let { runCatching { BinaryTagReader.readEmbedded(it) }.getOrNull() }
+        val fallbackName = resolvedFile?.nameWithoutExtension
+            ?: displayName?.substringBeforeLast('.')
+            ?: uri.lastPathSegment?.substringBeforeLast('.')
+            ?: "Audio Track"
+        val title = tags?.title?.takeIf { it.isNotBlank() }
+            ?: mediaTitle?.takeIf { it.isNotBlank() }
+            ?: fallbackName
+        val artist = tags?.artist?.takeIf { it.isNotBlank() }
+            ?: mediaArtist?.takeIf { it.isNotBlank() && it != "<unknown>" }
+            ?: "Unknown Artist"
+        val album = tags?.album?.takeIf { it.isNotBlank() }
+            ?: mediaAlbum?.takeIf { it.isNotBlank() && it != "<unknown>" }
+            ?: "Laguku"
+        val path = resolvedFile?.absolutePath.orEmpty()
+        val ext = resolvedFile?.extension ?: displayName?.substringAfterLast('.', "").orEmpty()
+        val key = resolvedFile?.let { runCatching { it.canonicalPath }.getOrDefault(it.absolutePath) } ?: uri.toString()
+
+        return Track(
+            id = stablePositiveId(key),
+            title = title,
+            artist = artist,
+            album = album,
+            trackNumber = tags?.trackNumber ?: 0,
+            durationMs = mediaDuration,
+            path = path,
+            contentUri = uri.toString(),
+            folderPath = resolvedFile?.parentFile?.absolutePath.orEmpty(),
+            replayGainDb = tags?.replayGainDb,
+            quality = AudioQualityInfo(codec = extensionToCodecLabel(ext)),
+            dateAddedSec = resolvedFile?.let { (it.lastModified() / 1000L).coerceAtLeast(0L) } ?: (System.currentTimeMillis() / 1000L),
+            chapters = tags?.chapters ?: emptyList()
+        )
     }
 
     fun groupByFolder(tracks: List<Track>): List<FolderNode> {

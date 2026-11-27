@@ -55,6 +55,8 @@ import com.laguku.player.service.MediaAction
 import com.laguku.player.service.MorningAlarmConfig
 import com.laguku.player.service.MultiClickMediaMapper
 import com.laguku.player.service.PlaybackService
+import com.laguku.player.service.TrackInstalledEvent
+import com.laguku.player.service.TrackInstalledReceiver
 import com.laguku.player.ui.glass.CoverPaletteExtractor
 import com.laguku.player.ui.glass.InteractiveGlassScrubView
 import com.laguku.player.ui.glass.LiquidGlassDrawable
@@ -116,6 +118,15 @@ class MainActivity : Activity(), AudioEngine.Listener, LibraryView.Callbacks, Pl
     private var amoledNightMode: Boolean = false
     private var amoledOverlayProgress: Float = 0f
     private var pendingShuffleAllFromShortcut: Boolean = false
+    private var pendingViewUri: Uri? = null
+    private var lastObservedInstallEventMs: Long = 0L
+    private val trackInstalledListener: (TrackInstalledEvent) -> Unit = { event ->
+        runOnUiThread {
+            if (!isDestroyed) {
+                refreshLagukuLibraryOnInstall(event)
+            }
+        }
+    }
     private var currentTransparencyLevel: Float = PlaybackStateStore.DEFAULT_GLASS_TRANSPARENCY
     private var currentAccessibilityFlags = LiquidGlassDrawable.AccessibilityFlags()
     private var lastUiAbLoopJumpElapsedMs: Long = 0L
@@ -152,7 +163,11 @@ class MainActivity : Activity(), AudioEngine.Listener, LibraryView.Callbacks, Pl
             if (cachedTracks.isNotEmpty()) {
                 refreshFilteredLibraryUi()
             }
-            if (pendingShuffleAllFromShortcut && cachedTracks.isNotEmpty()) {
+            val viewUri = pendingViewUri
+            if (viewUri != null) {
+                pendingViewUri = null
+                openAndPlayExternalUri(viewUri)
+            } else if (pendingShuffleAllFromShortcut && cachedTracks.isNotEmpty()) {
                 pendingShuffleAllFromShortcut = false
                 onShufflePlayAll(cachedTracks)
             }
@@ -200,6 +215,11 @@ class MainActivity : Activity(), AudioEngine.Listener, LibraryView.Callbacks, Pl
         super.onStart()
         currentAccessibilityFlags = LiquidGlassDrawable.LayerTokens.readSystemAccessibilityFlags(this)
         applyGlassSettingsToViews()
+        TrackInstalledReceiver.addListener(trackInstalledListener)
+        val latestInstall = TrackInstalledReceiver.latestEvent
+        if (latestInstall != null && latestInstall.receivedAtMs > lastObservedInstallEventMs) {
+            refreshLagukuLibraryOnInstall(latestInstall)
+        }
         SpringAnimatorHelper.setHostActive(true)
         libraryView.setHostActive(true)
         nowPlayingView.setHostActive(true)
@@ -212,6 +232,7 @@ class MainActivity : Activity(), AudioEngine.Listener, LibraryView.Callbacks, Pl
     }
 
     override fun onStop() {
+        TrackInstalledReceiver.removeListener(trackInstalledListener)
         SpringAnimatorHelper.setHostActive(false)
         libraryView.setHostActive(false)
         nowPlayingView.setHostActive(false)
@@ -853,6 +874,17 @@ class MainActivity : Activity(), AudioEngine.Listener, LibraryView.Callbacks, Pl
 
     private fun handleLaunchIntent(intent: Intent?) {
         when (intent?.action) {
+            Intent.ACTION_VIEW -> {
+                val viewUri = intent.data
+                if (viewUri != null) {
+                    intent.data = null
+                    if (audioEngine != null) {
+                        openAndPlayExternalUri(viewUri)
+                    } else {
+                        pendingViewUri = viewUri
+                    }
+                }
+            }
             ACTION_SHORTCUT_SHUFFLE_ALL -> {
                 if (cachedTracks.isNotEmpty() && audioEngine != null) {
                     onShufflePlayAll(cachedTracks)
@@ -867,6 +899,58 @@ class MainActivity : Activity(), AudioEngine.Listener, LibraryView.Callbacks, Pl
         if (intent?.getBooleanExtra(EXTRA_OPEN_NOW_PLAYING, false) == true) {
             intent.removeExtra(EXTRA_OPEN_NOW_PLAYING)
             showNowPlaying()
+        }
+    }
+
+    private fun openAndPlayExternalUri(uri: Uri) {
+        backgroundExecutor.execute {
+            val resolved = LibraryScanner.buildTrackFromUri(applicationContext, uri, getMusicRootDir())
+                ?: return@execute
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                lastLoadedTrackPath = null
+                val updatedRaw = if (resolved.path.isNotBlank()) {
+                    rawScannedTracks.filterNot { it.path == resolved.path } + resolved
+                } else {
+                    rawScannedTracks + resolved
+                }
+                rawScannedTracks = updatedRaw.sortedBy { it.title.lowercase() }
+                refreshFilteredLibraryUi()
+
+                val baseQueue = cachedTracks.filterNot {
+                    (resolved.path.isNotBlank() && it.path == resolved.path) ||
+                        it.contentUri == resolved.contentUri
+                }
+                val playQueue = listOf(resolved) + baseQueue
+                onPlayTracks(playQueue, 0)
+                showNowPlaying()
+            }
+        }
+    }
+
+    private fun refreshLagukuLibraryOnInstall(event: TrackInstalledEvent) {
+        lastObservedInstallEventMs = maxOf(lastObservedInstallEventMs, event.receivedAtMs)
+        val lagukuDir = File(getMusicRootDir(), "Laguku")
+        backgroundExecutor.execute {
+            val dirTracks = LibraryScanner.scanDirectory(lagukuDir)
+            val eventTrack = event.audioUri?.let { raw ->
+                runCatching {
+                    LibraryScanner.buildTrackFromUri(applicationContext, Uri.parse(raw), getMusicRootDir())
+                }.getOrNull()
+            }
+            val combinedDirTracks = if (eventTrack != null && eventTrack.path.isNotBlank()) {
+                dirTracks.filterNot { it.path == eventTrack.path } + eventTrack
+            } else {
+                dirTracks
+            }
+            val merged = LibraryScanner.mergeDirectoryTracks(rawScannedTracks, combinedDirTracks, lagukuDir)
+            val playlists = scanPlaylists(merged)
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                rawScannedTracks = merged
+                userPlaylists = playlists
+                refreshFilteredLibraryUi()
+            }
         }
     }
 
