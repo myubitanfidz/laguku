@@ -645,4 +645,33 @@ class MotionAndInteractiveUiTest {
         assertTrue(npSource.contains("showUtilitiesMenu"))
         assertTrue(npSource.contains("utilityTrigger"))
     }
+
+    @Test
+    fun coverAura_decaysToZeroBeforeHaloEdge() {
+        assertEquals(0.22f, NowPlayingView.CoverAuraMath.alphaAt(0f), 0.0001f)
+        assertEquals(0.09f, NowPlayingView.CoverAuraMath.alphaAt(0.50f), 0.0001f)
+        assertEquals(0.02f, NowPlayingView.CoverAuraMath.alphaAt(0.78f), 0.0001f)
+        assertEquals(0f, NowPlayingView.CoverAuraMath.alphaAt(1f), 0.0001f)
+        assertTrue(NowPlayingView.CoverAuraMath.alphaAt(0.90f) < 0.02f)
+
+        var prev = NowPlayingView.CoverAuraMath.alphaAt(0f)
+        for (i in 1..20) {
+            val next = NowPlayingView.CoverAuraMath.alphaAt(i / 20f)
+            assertTrue("Expected strictly decreasing aura alpha at step $i", next < prev)
+            prev = next
+        }
+
+        assertEquals(80f, NowPlayingView.CoverAuraMath.haloRadius(100f), 0.0001f)
+        assertEquals(0, (NowPlayingView.CoverAuraMath.gradientColors().last() ushr 24) and 0xFF)
+        assertEquals(0, NowPlayingView.CoverAuraMath.auraPaintAlpha(1f))
+        assertEquals(255, NowPlayingView.CoverAuraMath.auraPaintAlpha(0f))
+    }
+
+    @Test
+    fun coverArt_hasNoBoxShadowElevation() {
+        val npSource = File("src/main/kotlin/com/laguku/player/ui/player/NowPlayingView.kt").readText()
+        val stageBody = npSource.substringAfter("private fun buildCenterStage(").substringBefore("vinylDiscView.apply")
+        assertFalse(Regex("""elevation\s*=\s*[1-9]""").containsMatchIn(stageBody))
+        assertTrue(stageBody.contains("coverAuraView"))
+    }
 }

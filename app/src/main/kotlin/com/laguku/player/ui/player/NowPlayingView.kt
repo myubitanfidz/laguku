@@ -10,6 +10,7 @@ import android.graphics.Matrix
 import android.graphics.Outline
 import android.graphics.Paint
 import android.graphics.PorterDuff
+import android.graphics.PorterDuffColorFilter
 import android.graphics.PorterDuffXfermode
 import android.graphics.RadialGradient
 import android.graphics.Shader
@@ -450,6 +451,35 @@ class NowPlayingView(
         }
     }
 
+    object CoverAuraMath {
+        const val HALO_SCALE = 1.6f
+        val STOPS = floatArrayOf(0f, 0.50f, 0.78f, 1f)
+        val ALPHAS = floatArrayOf(0.22f, 0.09f, 0.02f, 0f)
+
+        fun haloRadius(coverSizePx: Float): Float = coverSizePx * HALO_SCALE * 0.5f
+
+        fun alphaAt(t: Float): Float {
+            val clamped = t.coerceIn(0f, 1f)
+            for (i in 0 until STOPS.size - 1) {
+                val s0 = STOPS[i]
+                val s1 = STOPS[i + 1]
+                if (clamped <= s1) {
+                    val frac = if (s1 > s0) (clamped - s0) / (s1 - s0) else 0f
+                    return ALPHAS[i] + (ALPHAS[i + 1] - ALPHAS[i]) * frac
+                }
+            }
+            return ALPHAS.last()
+        }
+
+        fun gradientColors(): IntArray = IntArray(ALPHAS.size) { i ->
+            val alphaByte = (ALPHAS[i] * 255f).roundToInt().coerceIn(0, 255)
+            (alphaByte shl 24) or 0xFFFFFF
+        }
+
+        fun auraPaintAlpha(amoledProgress: Float): Int =
+            ((1f - amoledProgress.coerceIn(0f, 1f)) * 255f).roundToInt()
+    }
+
     object AmbientMeshMath {
         const val MESH_CYCLE_SECONDS = 20f
         const val MIN_TEXT_CONTRAST_RATIO = 7.0
@@ -801,6 +831,7 @@ class NowPlayingView(
 
     private val stageFrame = FrameLayout(context)
     private val coverContainer = FrameLayout(context)
+    private val coverAuraView = CoverAuraView(context)
     private val coverCard = FrameLayout(context)
     private val coverPlaceholder = ImageView(context)
     private val coverImage = ImageView(context)
@@ -1125,6 +1156,7 @@ class NowPlayingView(
     private fun applyAmoledProgressToGlass(progress: Float) {
         amoledProgress = progress.coerceIn(0f, 1f)
         ambientMeshView.setAmoledProgress(amoledProgress)
+        coverAuraView.setAmoledProgress(amoledProgress)
         qualityBadgeGlass.setAmoledProgress(amoledProgress)
         returnPillGlass.setAmoledProgress(amoledProgress)
         lyricTunerToggleGlass.setAmoledProgress(amoledProgress)
@@ -1480,6 +1512,8 @@ class NowPlayingView(
     private fun buildTopDisplayZone() {
         topDisplayZone.orientation = LinearLayout.VERTICAL
         topDisplayZone.gravity = Gravity.CENTER_HORIZONTAL
+        topDisplayZone.clipChildren = false
+        topDisplayZone.clipToPadding = false
 
         passiveHeader.apply {
             orientation = LinearLayout.VERTICAL
@@ -1541,7 +1575,6 @@ class NowPlayingView(
         miniCoverFrame.apply {
             outlineProvider = miniOutline
             clipToOutline = true
-            elevation = 4f * density
             SpringAnimatorHelper.attachPressFeedback(this)
             setOnClickListener {
                 setDisplayMode(DisplayMode.FULL_COVER, animate = true, syncScrub = true)
@@ -1737,19 +1770,18 @@ class NowPlayingView(
             setPadding(0, 0, 0, 0)
             outlineProvider = coverOutlineProvider
             clipToOutline = true
-            elevation = 10f * density
         }
         coverImage.apply {
             background = null
             scaleType = ImageView.ScaleType.CENTER_CROP
             outlineProvider = coverOutlineProvider
             clipToOutline = true
-            elevation = 10f * density
             visibility = View.GONE
         }
         coverCard.addView(coverPlaceholder, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         coverCard.addView(coverImage, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
 
+        coverContainer.addView(coverAuraView, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
         coverContainer.addView(coverCard, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT, Gravity.CENTER))
         coverContainer.addOnLayoutChangeListener { v, _, _, _, _, _, _, _, _ ->
             val avail = minOf(v.width, v.height)
@@ -3128,6 +3160,7 @@ class NowPlayingView(
 
     private fun applyPalette(newPalette: CoverPalette) {
         ambientMeshView.setMeshPalette(AmbientMeshMath.fromCoverPalette(newPalette))
+        coverAuraView.setAuraColor(newPalette.accentGlow)
         qualityBadgeGlass.setPalette(newPalette)
         vinylDiscView.setPalette(newPalette)
         returnPillGlass.setPalette(newPalette)
@@ -3761,6 +3794,63 @@ class NowPlayingView(
                 amoledPaint.alpha = (amoledProgress * 255f).roundToInt().coerceIn(0, 255)
                 canvas.drawRect(0f, 0f, w, h, amoledPaint)
             }
+        }
+    }
+
+    private class CoverAuraView(context: Context) : View(context) {
+        private val radialShader = RadialGradient(
+            0f,
+            0f,
+            1f,
+            CoverAuraMath.gradientColors(),
+            CoverAuraMath.STOPS,
+            Shader.TileMode.CLAMP
+        )
+        private val shaderMatrix = Matrix()
+        private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            shader = radialShader
+        }
+        private var cx: Float = 0f
+        private var cy: Float = 0f
+        private var radius: Float = 0f
+        private var auraColor: Int = 0
+
+        init {
+            isClickable = false
+            importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
+            setAuraColor(CoverPaletteExtractor.defaultPalette().accentGlow)
+        }
+
+        fun setAuraColor(color: Int) {
+            val opaque = color or 0xFF000000.toInt()
+            if (auraColor == opaque) return
+            auraColor = opaque
+            paint.colorFilter = PorterDuffColorFilter(opaque, PorterDuff.Mode.SRC_IN)
+            invalidate()
+        }
+
+        fun setAmoledProgress(progress: Float) {
+            val nextAlpha = CoverAuraMath.auraPaintAlpha(progress)
+            if (paint.alpha == nextAlpha) return
+            paint.alpha = nextAlpha
+            invalidate()
+        }
+
+        override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+            super.onSizeChanged(w, h, oldw, oldh)
+            radius = CoverAuraMath.haloRadius(min(w, h).toFloat())
+            cx = w * 0.5f
+            cy = h * 0.5f
+            if (radius > 0f) {
+                shaderMatrix.setScale(radius, radius)
+                shaderMatrix.postTranslate(cx, cy)
+                radialShader.setLocalMatrix(shaderMatrix)
+            }
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            if (paint.alpha == 0 || radius <= 0f) return
+            canvas.drawCircle(cx, cy, radius, paint)
         }
     }
 
