@@ -14,6 +14,7 @@ import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.text.Editable
 import android.text.TextUtils
 import android.text.TextWatcher
@@ -21,7 +22,9 @@ import android.util.LruCache
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
+import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.view.ViewOutlineProvider
 import android.widget.EditText
@@ -48,8 +51,10 @@ import com.laguku.player.ui.glass.LiquidGlassDrawable
 import com.laguku.player.ui.motion.LiquidGlassPressAnimator
 import com.laguku.player.ui.motion.PageMotionSpec
 import com.laguku.player.ui.motion.SpringAnimatorHelper
+import com.laguku.player.ui.player.NowPlayingView
 import java.io.File
 import java.util.concurrent.Executors
+import kotlin.math.abs
 
 /**
  * Main library browser following the Bottom-Half Thumb-Zone Layout:
@@ -69,6 +74,8 @@ class LibraryView(
         fun onPlayTracks(tracks: List<Track>, startIndex: Int)
         fun onShufflePlayAll(tracks: List<Track>)
         fun onTogglePlayPause()
+        fun onNextTrack()
+        fun onPreviousTrack()
         fun onOpenNowPlaying()
         fun onRequestStoragePermission()
         fun onImportM3u8Clicked()
@@ -211,6 +218,10 @@ class LibraryView(
     private val staggerHandler = Handler(Looper.getMainLooper())
     private val staggerRunnables = ArrayList<Runnable>(12)
     private val staggerPostRunnable = Runnable { runVisibleRowsStagger() }
+    private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
+    private val miniSwipeController = NowPlayingView.HorizontalSwipeCommitController()
+    private val miniSwipeThresholdPx: Float = PageMotionSpec.SWIPE_COMMIT_THRESHOLD_DP * density
+    private val miniSwipeMaxOffsetPx: Float = NowPlayingView.HorizontalSwipeCommitController.MAX_SWIPE_OFFSET_DP * density
 
     init {
         buildUi()
@@ -225,6 +236,8 @@ class LibraryView(
         if (!active) {
             bottomScrubBar.cancelActiveInteractions()
             SpringAnimatorHelper.cancelSpring(bottomScrubBar, CHANNEL_NAV_COMPACT)
+            SpringAnimatorHelper.cancelSpring(miniPlayerPill, CHANNEL_MINI_SWIPE)
+            miniPlayerPill.translationX = 0f
             cancelVisibleRowsStagger()
         }
     }
@@ -738,8 +751,87 @@ class LibraryView(
                 }
             }
             clipToOutline = true
-            LiquidGlassPressAnimator.attach(this, LiquidGlassPressAnimator.PressStyle.WIDE, miniPlayerGlass)
+            foreground = null
             setOnClickListener { callbacks.onOpenNowPlaying() }
+            setOnTouchListener { v, event ->
+                LiquidGlassPressAnimator.handleTouchEvent(
+                    v,
+                    event,
+                    LiquidGlassPressAnimator.PressStyle.WIDE,
+                    miniPlayerGlass
+                )
+                val nowMs = SystemClock.elapsedRealtime()
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        SpringAnimatorHelper.cancelSpring(miniPlayerPill, CHANNEL_MINI_SWIPE)
+                        miniSwipeController.onDown(event.rawX, event.rawY, nowMs)
+                        false
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        val prevState = miniSwipeController.state
+                        miniSwipeController.onMove(
+                            x = event.rawX,
+                            y = event.rawY,
+                            nowMs = nowMs,
+                            touchSlopPx = touchSlop.toFloat(),
+                            swipeThresholdPx = miniSwipeThresholdPx,
+                            maxOffsetPx = miniSwipeMaxOffsetPx
+                        )
+                        if (miniSwipeController.state == NowPlayingView.HorizontalSwipeCommitController.GestureState.HORIZONTAL_DRAG) {
+                            if (prevState != NowPlayingView.HorizontalSwipeCommitController.GestureState.HORIZONTAL_DRAG) {
+                                v.parent?.requestDisallowInterceptTouchEvent(true)
+                            }
+                            if (miniSwipeController.thresholdCrossedThisMove) {
+                                v.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                            }
+                            v.translationX = miniSwipeController.translationX
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        v.parent?.requestDisallowInterceptTouchEvent(false)
+                        val wasHorizontal = miniSwipeController.state ==
+                            NowPlayingView.HorizontalSwipeCommitController.GestureState.HORIZONTAL_DRAG
+                        val isCancel = event.actionMasked == MotionEvent.ACTION_CANCEL
+                        val triggerDir = miniSwipeController.onRelease(
+                            x = event.rawX,
+                            isCancel = isCancel,
+                            swipeThresholdPx = miniSwipeThresholdPx
+                        )
+                        if (wasHorizontal) {
+                            val profile = if (SpringAnimatorHelper.isReducedMotionEnabled(context)) {
+                                SpringAnimatorHelper.SPRING_REDUCED_MOTION
+                            } else {
+                                SpringAnimatorHelper.SPRING_BOUNCY
+                            }
+                            SpringAnimatorHelper.animateSpring(
+                                key = miniPlayerPill,
+                                start = miniPlayerPill.translationX,
+                                target = 0f,
+                                stiffness = profile.stiffness,
+                                dampingRatio = profile.dampingRatio,
+                                valueThreshold = 0.25f,
+                                channel = CHANNEL_MINI_SWIPE,
+                                onUpdate = { tx -> miniPlayerPill.translationX = tx }
+                            )
+                            if (triggerDir > 0) {
+                                v.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                                callbacks.onNextTrack()
+                            } else if (triggerDir < 0) {
+                                v.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                                callbacks.onPreviousTrack()
+                            }
+                            true
+                        } else {
+                            miniPlayerPill.translationX = 0f
+                            false
+                        }
+                    }
+                    else -> false
+                }
+            }
         }
 
         val row = LinearLayout(context).apply {
@@ -1659,5 +1751,6 @@ class LibraryView(
     private companion object {
         const val CHANNEL_NAV_COMPACT = 30
         const val CHANNEL_ROW_STAGGER = 41
+        const val CHANNEL_MINI_SWIPE = 42
     }
 }

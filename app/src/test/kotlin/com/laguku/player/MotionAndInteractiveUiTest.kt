@@ -779,4 +779,41 @@ class MotionAndInteractiveUiTest {
         assertEquals(105L, PageMotionSpec.computeStaggerDelayMs(3))
         assertEquals(1.60f, NowPlayingView.CoverAuraMath.HALO_SCALE, 0.0001f)
     }
+
+    @Test
+    fun horizontalSwipeCommitController_uses72DpThreshold068ResistanceAndResetsThresholdFlagOnRetreat() {
+        assertEquals(72f, NowPlayingView.HorizontalSwipeCommitController.SWIPE_THRESHOLD_DP, 0.0001f)
+        assertEquals(0.68f, NowPlayingView.HorizontalSwipeCommitController.RUBBER_BAND_RESISTANCE, 0.0001f)
+        assertTrue(NowPlayingView.HorizontalSwipeCommitController.COMMIT_ON_RELEASE_ONLY)
+
+        val controller = NowPlayingView.HorizontalSwipeCommitController()
+        val slopPx = 12f
+        val thresholdPx = 72f
+        val maxOffsetPx = 96f
+
+        controller.onDown(x = 300f, y = 400f, nowMs = 1_000L)
+        assertFalse(controller.onMove(x = 250f, y = 400f, nowMs = 1_030L, touchSlopPx = slopPx, swipeThresholdPx = thresholdPx, maxOffsetPx = maxOffsetPx))
+        // dx = -50f within threshold -> exact 0.68f rubber-band resistance (-34f)
+        assertEquals(-34f, controller.translationX, 0.0001f)
+        assertFalse(controller.isPastThreshold)
+        assertFalse(controller.thresholdCrossedThisMove)
+
+        // Cross 72dp threshold -> thresholdCrossedThisMove true once, committedDirection still 0 while held
+        assertFalse(controller.onMove(x = 220f, y = 400f, nowMs = 1_060L, touchSlopPx = slopPx, swipeThresholdPx = thresholdPx, maxOffsetPx = maxOffsetPx))
+        assertTrue(controller.isPastThreshold)
+        assertTrue(controller.thresholdCrossedThisMove)
+        assertEquals(0, controller.committedDirection)
+
+        // Continue moving beyond threshold -> thresholdCrossedThisMove false (fires only once per crossing)
+        assertFalse(controller.onMove(x = 200f, y = 400f, nowMs = 1_090L, touchSlopPx = slopPx, swipeThresholdPx = thresholdPx, maxOffsetPx = maxOffsetPx))
+        assertTrue(controller.isPastThreshold)
+        assertFalse(controller.thresholdCrossedThisMove)
+
+        // Retreat back inside < 72dp before release -> resets threshold flag and returns 0 on release
+        assertFalse(controller.onMove(x = 260f, y = 400f, nowMs = 1_140L, touchSlopPx = slopPx, swipeThresholdPx = thresholdPx, maxOffsetPx = maxOffsetPx))
+        assertFalse(controller.isPastThreshold)
+        assertFalse(controller.thresholdCrossedThisMove)
+        assertEquals(0, controller.onRelease(x = 260f, isCancel = false, swipeThresholdPx = thresholdPx))
+        assertEquals(0f, controller.translationX, 0.0001f)
+    }
 }

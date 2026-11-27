@@ -199,6 +199,10 @@ class NowPlayingView(
             private set
         var committedDirection: Int = 0
             private set
+        var thresholdCrossedThisMove: Boolean = false
+            private set
+        var isPastThreshold: Boolean = false
+            private set
 
         private var downX: Float = 0f
         private var downY: Float = 0f
@@ -210,6 +214,8 @@ class NowPlayingView(
             state = GestureState.IDLE
             translationX = 0f
             committedDirection = 0
+            thresholdCrossedThisMove = false
+            isPastThreshold = false
             downX = x
             downY = y
             lastX = x
@@ -225,6 +231,7 @@ class NowPlayingView(
             swipeThresholdPx: Float,
             maxOffsetPx: Float
         ): Boolean {
+            thresholdCrossedThisMove = false
             if (state == GestureState.VERTICAL_COLLAPSE) return false
             val dx = x - downX
             val dy = y - downY
@@ -233,6 +240,7 @@ class NowPlayingView(
                 if (dy > touchSlopPx * 5f && dy > abs(dx) * 1.4f) {
                     state = GestureState.VERTICAL_COLLAPSE
                     translationX = 0f
+                    isPastThreshold = false
                     return true
                 }
                 if (abs(dx) > touchSlopPx && abs(dx) > abs(dy) * 1.2f) {
@@ -245,7 +253,10 @@ class NowPlayingView(
                 velocityX = (x - lastX) / dtSec
                 lastX = x
                 lastTimeMs = nowMs
-                translationX = PlayDragMath.computeRubberBandOffset(dx, swipeThresholdPx, maxOffsetPx)
+                translationX = computeCalibratedOffset(dx, swipeThresholdPx, maxOffsetPx)
+                val nowPast = abs(dx) >= swipeThresholdPx
+                thresholdCrossedThisMove = nowPast && !isPastThreshold
+                isPastThreshold = nowPast
             }
             return false
         }
@@ -265,13 +276,37 @@ class NowPlayingView(
             committedDirection = dir
             state = GestureState.IDLE
             translationX = 0f
+            thresholdCrossedThisMove = false
+            isPastThreshold = false
             return dir
         }
 
         companion object {
-            const val SWIPE_THRESHOLD_DP = 56f
-            const val MAX_SWIPE_OFFSET_DP = 76f
+            const val SWIPE_THRESHOLD_DP = PageMotionSpec.SWIPE_COMMIT_THRESHOLD_DP
+            const val RUBBER_BAND_RESISTANCE = PageMotionSpec.SWIPE_RUBBER_BAND_RESISTANCE
+            const val COMMIT_ON_RELEASE_ONLY = PageMotionSpec.COMMIT_ON_RELEASE_ONLY
+            const val MAX_SWIPE_OFFSET_DP = 96f
             const val FLING_VELOCITY_THRESHOLD_PX_SEC = 650f
+
+            fun computeCalibratedOffset(
+                rawDxPx: Float,
+                thresholdPx: Float,
+                maxOffsetPx: Float,
+                resistance: Float = RUBBER_BAND_RESISTANCE
+            ): Float {
+                if (thresholdPx <= 0f || maxOffsetPx <= 0f) return 0f
+                val r = resistance.coerceIn(0.05f, 1f)
+                val sign = if (rawDxPx >= 0f) 1f else -1f
+                val absDx = abs(rawDxPx)
+                val baseAtThreshold = thresholdPx * r
+                if (absDx <= thresholdPx) {
+                    return rawDxPx * r
+                }
+                val extra = absDx - thresholdPx
+                val headroom = (maxOffsetPx - baseAtThreshold).coerceAtLeast(1f)
+                val dampedExtra = headroom * (extra / (extra + headroom * 1.4f))
+                return sign * (baseAtThreshold + dampedExtra)
+            }
 
             fun resolveReleaseDirection(
                 finalDxPx: Float,
@@ -1693,6 +1728,9 @@ class NowPlayingView(
                     if (coverSwipeController.state == HorizontalSwipeCommitController.GestureState.HORIZONTAL_DRAG) {
                         if (prevState != HorizontalSwipeCommitController.GestureState.HORIZONTAL_DRAG) {
                             v.parent?.requestDisallowInterceptTouchEvent(true)
+                        }
+                        if (coverSwipeController.thresholdCrossedThisMove) {
+                            v.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
                         }
                         coverCard.translationX = coverSwipeController.translationX
                         return@setOnTouchListener true

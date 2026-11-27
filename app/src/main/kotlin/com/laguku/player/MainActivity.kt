@@ -396,6 +396,14 @@ class MainActivity : Activity(), AudioEngine.Listener, LibraryView.Callbacks, Pl
         audioEngine?.togglePlayPause()
     }
 
+    override fun onNextTrack() {
+        audioEngine?.next()
+    }
+
+    override fun onPreviousTrack() {
+        audioEngine?.previous()
+    }
+
     override fun onOpenNowPlaying() {
         showNowPlaying()
     }
