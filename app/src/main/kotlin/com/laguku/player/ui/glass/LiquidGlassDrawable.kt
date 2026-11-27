@@ -359,10 +359,11 @@ class LiquidGlassDrawable(
     constructor(
         context: Context,
         cornerRadiusDp: Float = 22f,
-        initialPalette: CoverPalette = CoverPaletteExtractor.defaultPalette()
+        initialPalette: CoverPalette = CoverPaletteExtractor.defaultPalette(),
+        rimWidthDp: Float = 1.2f
     ) : this(
         cornerRadiusPx = cornerRadiusDp * context.resources.displayMetrics.density,
-        rimWidthPx = 1.2f * context.resources.displayMetrics.density,
+        rimWidthPx = rimWidthDp * context.resources.displayMetrics.density,
         initialPalette = initialPalette
     ) {
         density = context.resources.displayMetrics.density

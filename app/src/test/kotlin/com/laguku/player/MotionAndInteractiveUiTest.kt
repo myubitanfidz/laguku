@@ -15,6 +15,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
+import kotlin.math.roundToInt
 
 class MotionAndInteractiveUiTest {
 
@@ -584,5 +585,39 @@ class MotionAndInteractiveUiTest {
         playCtrl.onDragMove(rawDxPx = 12f, thresholdPx = 120f, maxOffsetPx = 180f, nowMs = 6_400L)
         assertEquals(0, playCtrl.activeDirection)
         assertEquals(0, playCtrl.onTouchUp(wasDragging = true, isCancel = false))
+    }
+
+    @Test
+    fun metadataGlassSpec_usesCalibratedTypographyAndThinRim() {
+        assertEquals(18f, NowPlayingView.MetadataGlassSpec.TITLE_SIZE_SP, 0.0001f)
+        assertEquals(14f, NowPlayingView.MetadataGlassSpec.ARTIST_SIZE_SP, 0.0001f)
+        assertEquals(0.72f, NowPlayingView.MetadataGlassSpec.ARTIST_ALPHA, 0.0001f)
+        assertEquals(1.0f, NowPlayingView.MetadataGlassSpec.RIM_WIDTH_DP, 0.0001f)
+        assertEquals(18f, NowPlayingView.MetadataGlassSpec.CORNER_RADIUS_DP, 0.0001f)
+        assertEquals((0.72f * 255f).roundToInt(), (NowPlayingView.MetadataGlassSpec.ARTIST_TEXT_COLOR ushr 24) and 0xFF)
+        assertEquals(0xFFFFFF, NowPlayingView.MetadataGlassSpec.ARTIST_TEXT_COLOR and 0x00FFFFFF)
+    }
+
+    @Test
+    fun activeTrackMetadata_keepsLiquidGlassBackgrounds() {
+        val npSource = File("src/main/kotlin/com/laguku/player/ui/player/NowPlayingView.kt").readText()
+        assertTrue(npSource.contains("background = metadataGlass"))
+        assertTrue(npSource.contains("background = qualityBadgeGlass"))
+
+        val onTrackChangedBody = npSource.substringAfter("fun onTrackChanged(").substringBefore("private fun triggerTrackNavigation")
+        assertFalse(onTrackChangedBody.contains("background"))
+        assertFalse(onTrackChangedBody.contains("setBackground"))
+        assertFalse(onTrackChangedBody.contains("GradientDrawable"))
+
+        val renderBadgeBody = npSource.substringAfter("private fun renderQualityBadge(").substringBefore("fun isModalOpen")
+        assertFalse(renderBadgeBody.contains("background"))
+        assertFalse(renderBadgeBody.contains("setBackground"))
+        assertFalse(renderBadgeBody.contains("GradientDrawable"))
+
+        val lvSource = File("src/main/kotlin/com/laguku/player/ui/library/LibraryView.kt").readText()
+        val updateMiniBody = lvSource.substringAfter("fun updateMiniPlayer(").substringBefore("fun updateMiniPlayerProgress")
+        assertFalse(updateMiniBody.contains("background"))
+        assertFalse(updateMiniBody.contains("setBackground"))
+        assertFalse(updateMiniBody.contains("GradientDrawable"))
     }
 }

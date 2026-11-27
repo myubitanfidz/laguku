@@ -420,6 +420,15 @@ class NowPlayingView(
         }
     }
 
+    object MetadataGlassSpec {
+        const val CORNER_RADIUS_DP = 18f
+        const val RIM_WIDTH_DP = 1.0f
+        const val TITLE_SIZE_SP = 18f
+        const val ARTIST_SIZE_SP = 14f
+        const val ARTIST_ALPHA = 0.72f
+        const val ARTIST_TEXT_COLOR = 0xB8FFFFFF.toInt() // white @ 0.72; view alpha is animated on track change
+    }
+
     object AmbientMeshMath {
         const val MESH_CYCLE_SECONDS = 20f
         const val MIN_TEXT_CONTRAST_RATIO = 7.0
@@ -757,7 +766,7 @@ class NowPlayingView(
     private val passiveHeader = LinearLayout(context)
     private val albumTitleView = TextView(context)
     private val qualityBadgeView = TextView(context)
-    private val qualityBadgeGlass = LiquidGlassDrawable(context, 14f)
+    private val qualityBadgeGlass = LiquidGlassDrawable(context, 14f, rimWidthDp = MetadataGlassSpec.RIM_WIDTH_DP)
     private val routeBadgeView = TextView(context)
 
     // Floating Mini Header (shown when Lyrics mode is active)
@@ -823,6 +832,12 @@ class NowPlayingView(
 
     // Dock Row 1: Track info + Favorit + Antrean
     private val dockTrackRow = LinearLayout(context)
+    private val metadataBlock = LinearLayout(context)
+    private val metadataGlass = LiquidGlassDrawable(
+        context,
+        MetadataGlassSpec.CORNER_RADIUS_DP,
+        rimWidthDp = MetadataGlassSpec.RIM_WIDTH_DP
+    )
     private val trackTitleView = TextView(context)
     private val trackArtistView = TextView(context)
     private val favoriteButton = ImageButton(context)
@@ -1106,6 +1121,7 @@ class NowPlayingView(
         lyricQuoteGlass.setAmoledProgress(amoledProgress)
         dockIconGlassFav.setAmoledProgress(amoledProgress)
         dockIconGlassQueue.setAmoledProgress(amoledProgress)
+        metadataGlass.setAmoledProgress(amoledProgress)
         playPauseGlass.setAmoledProgress(amoledProgress)
         labPillGlass.setAmoledProgress(amoledProgress)
         timerPillGlass.setAmoledProgress(amoledProgress)
@@ -1139,6 +1155,7 @@ class NowPlayingView(
         lyricQuoteGlass.setContinuousTransparency(level)
         dockIconGlassFav.setContinuousTransparency(level)
         dockIconGlassQueue.setContinuousTransparency(level)
+        metadataGlass.setContinuousTransparency(level)
         playPauseGlass.setContinuousTransparency(level)
         labPillGlass.setContinuousTransparency(level)
         timerPillGlass.setContinuousTransparency(level)
@@ -1157,6 +1174,7 @@ class NowPlayingView(
         lyricQuoteGlass.setAccessibilityFlags(flags)
         dockIconGlassFav.setAccessibilityFlags(flags)
         dockIconGlassQueue.setAccessibilityFlags(flags)
+        metadataGlass.setAccessibilityFlags(flags)
         playPauseGlass.setAccessibilityFlags(flags)
         labPillGlass.setAccessibilityFlags(flags)
         timerPillGlass.setAccessibilityFlags(flags)
@@ -2284,24 +2302,27 @@ class NowPlayingView(
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        val titleCol = LinearLayout(context).apply {
+        metadataBlock.apply {
             orientation = LinearLayout.VERTICAL
+            background = metadataGlass
+            setPadding(dp(14), dp(10), dp(14), dp(10))
         }
         trackTitleView.apply {
             setTextColor(0xFFFFFFFF.toInt())
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, MetadataGlassSpec.TITLE_SIZE_SP)
             typeface = Typeface.create("sans-serif", Typeface.BOLD)
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
         }
         trackArtistView.apply {
-            setTextColor(0xA3FFFFFF.toInt())
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            setTextColor(MetadataGlassSpec.ARTIST_TEXT_COLOR)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, MetadataGlassSpec.ARTIST_SIZE_SP)
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
         }
-        titleCol.addView(trackTitleView, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
-        titleCol.addView(
+        metadataBlock.addView(trackTitleView, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
+        metadataBlock.addView(
             trackArtistView,
             LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply {
                 topMargin = dp(2)
@@ -2329,7 +2350,7 @@ class NowPlayingView(
             setOnClickListener { showQueueOverlay() }
         }
 
-        dockTrackRow.addView(titleCol, LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f).apply {
+        dockTrackRow.addView(metadataBlock, LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f).apply {
             marginEnd = dp(8)
         })
         dockTrackRow.addView(favoriteButton, LinearLayout.LayoutParams(dp(48), dp(48)).apply {
@@ -3183,6 +3204,8 @@ class NowPlayingView(
         lyricQuoteGlass.setTintProfile(baseFraction = 0.72f, accentFraction = 0.35f, preferAccentGlow = true)
         dockIconGlassFav.setPalette(newPalette)
         dockIconGlassQueue.setPalette(newPalette)
+        metadataGlass.setPalette(newPalette)
+        metadataGlass.setTintProfile(baseFraction = 0.56f, accentFraction = 0.12f)
         playPauseGlass.setPalette(newPalette)
         modeScrubPill.setPalette(newPalette)
         labPillGlass.setPalette(newPalette)
