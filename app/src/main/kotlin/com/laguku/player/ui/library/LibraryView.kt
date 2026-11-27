@@ -46,6 +46,7 @@ import com.laguku.player.ui.glass.CoverPaletteExtractor
 import com.laguku.player.ui.glass.InteractiveGlassScrubView
 import com.laguku.player.ui.glass.LiquidGlassDrawable
 import com.laguku.player.ui.motion.LiquidGlassPressAnimator
+import com.laguku.player.ui.motion.PageMotionSpec
 import com.laguku.player.ui.motion.SpringAnimatorHelper
 import java.io.File
 import java.util.concurrent.Executors
@@ -205,6 +206,11 @@ class LibraryView(
     private var smoothedNavArgb: Int = LiquidGlassDrawable.LayerTokens.DARK_BASE_GROUND
     private var smoothedNavLum: Float = 0.12f
     private val sampleBackdropRunnable = Runnable { sampleBottomTabBackdrop() }
+    private var hostActive: Boolean = true
+    private var pendingStaggerEntrance: Boolean = false
+    private val staggerHandler = Handler(Looper.getMainLooper())
+    private val staggerRunnables = ArrayList<Runnable>(12)
+    private val staggerPostRunnable = Runnable { runVisibleRowsStagger() }
 
     init {
         buildUi()
@@ -215,15 +221,18 @@ class LibraryView(
     fun getUtilitiesAnchorView(): View = utilitiesPill
 
     fun setHostActive(active: Boolean) {
+        hostActive = active
         if (!active) {
             bottomScrubBar.cancelActiveInteractions()
             SpringAnimatorHelper.cancelSpring(bottomScrubBar, CHANNEL_NAV_COMPACT)
+            cancelVisibleRowsStagger()
         }
     }
 
     override fun onDetachedFromWindow() {
         bottomScrubBar.cancelActiveInteractions()
         SpringAnimatorHelper.cancelSpring(bottomScrubBar, CHANNEL_NAV_COMPACT)
+        cancelVisibleRowsStagger()
         super.onDetachedFromWindow()
     }
 
@@ -282,6 +291,7 @@ class LibraryView(
         playlists = loadedPlaylists
         drillDownTitle = null
         drillDownTracks = null
+        pendingStaggerEntrance = true
         rebuildDisplayedEntries()
     }
 
@@ -1032,6 +1042,10 @@ class LibraryView(
         }
 
         listAdapter.submitEntries(entries, palette)
+        if (pendingStaggerEntrance && entries.isNotEmpty()) {
+            pendingStaggerEntrance = false
+            scheduleVisibleRowsStagger()
+        }
         if (permissionCard.visibility != View.VISIBLE) {
             emptyStateView.text = if (activeTab == Tab.PLAYLISTS && drillTracks == null) {
                 context.getString(R.string.playlist_empty)
@@ -1041,6 +1055,59 @@ class LibraryView(
             emptyStateView.visibility = if (entries.isEmpty()) View.VISIBLE else View.GONE
         }
         scheduleBackdropSample()
+    }
+
+    private fun scheduleVisibleRowsStagger() {
+        cancelVisibleRowsStagger()
+        if (!hostActive || SpringAnimatorHelper.isReducedMotionEnabled(context)) return
+        recyclerView.post(staggerPostRunnable)
+    }
+
+    private fun runVisibleRowsStagger() {
+        if (!hostActive || SpringAnimatorHelper.isReducedMotionEnabled(context)) return
+        val visibleCount = minOf(recyclerView.childCount, 12)
+        val entryOffsetPx = PageMotionSpec.LIBRARY_ROW_ENTRY_OFFSET_DP * density
+        for (i in 0 until visibleCount) {
+            val child = recyclerView.getChildAt(i) ?: continue
+            SpringAnimatorHelper.cancelSpring(child, CHANNEL_ROW_STAGGER)
+            child.alpha = 0f
+            child.translationY = entryOffsetPx
+            val task = Runnable {
+                if (!hostActive) {
+                    child.alpha = 1f
+                    child.translationY = 0f
+                    return@Runnable
+                }
+                SpringAnimatorHelper.animateSpring(
+                    key = child,
+                    start = 0f,
+                    target = 1f,
+                    stiffness = SpringAnimatorHelper.SPRING_SMOOTH.stiffness,
+                    dampingRatio = SpringAnimatorHelper.SPRING_SMOOTH.dampingRatio,
+                    channel = CHANNEL_ROW_STAGGER,
+                    onUpdate = { p ->
+                        child.alpha = p.coerceIn(0f, 1f)
+                        child.translationY = entryOffsetPx * (1f - p)
+                    }
+                )
+            }
+            staggerRunnables.add(task)
+            staggerHandler.postDelayed(task, PageMotionSpec.computeStaggerDelayMs(i))
+        }
+    }
+
+    private fun cancelVisibleRowsStagger() {
+        recyclerView.removeCallbacks(staggerPostRunnable)
+        for (i in 0 until staggerRunnables.size) {
+            staggerHandler.removeCallbacks(staggerRunnables[i])
+        }
+        staggerRunnables.clear()
+        for (i in 0 until recyclerView.childCount) {
+            val child = recyclerView.getChildAt(i) ?: continue
+            SpringAnimatorHelper.cancelSpring(child, CHANNEL_ROW_STAGGER)
+            child.alpha = 1f
+            child.translationY = 0f
+        }
     }
 
     private fun scheduleBackdropSample() {
@@ -1591,5 +1658,6 @@ class LibraryView(
 
     private companion object {
         const val CHANNEL_NAV_COMPACT = 30
+        const val CHANNEL_ROW_STAGGER = 41
     }
 }

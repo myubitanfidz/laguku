@@ -64,6 +64,7 @@ import com.laguku.player.ui.glass.StackBlur
 import com.laguku.player.ui.library.InsightsSheetView
 import com.laguku.player.ui.library.LibraryUtilitiesSheetView
 import com.laguku.player.ui.library.LibraryView
+import com.laguku.player.ui.motion.PageMotionSpec
 import com.laguku.player.ui.motion.SpringAnimatorHelper
 import com.laguku.player.ui.player.AudioLabSheetView
 import com.laguku.player.ui.player.LyricShareCardRenderer
@@ -1023,18 +1024,23 @@ class MainActivity : Activity(), AudioEngine.Listener, LibraryView.Callbacks, Pl
         nowPlayingView.translationY = startOffset
         nowPlayingView.scaleX = 0.94f
         nowPlayingView.scaleY = 0.94f
+        val reduced = SpringAnimatorHelper.isReducedMotionEnabled(this)
+        val stiffness = if (reduced) SpringAnimatorHelper.SPRING_REDUCED_MOTION.stiffness else PageMotionSpec.PAGE_MORPH_STIFFNESS
+        val damping = if (reduced) SpringAnimatorHelper.SPRING_REDUCED_MOTION.dampingRatio else PageMotionSpec.PAGE_MORPH_DAMPING_RATIO
         SpringAnimatorHelper.animateSpring(
             key = nowPlayingView,
             start = 0f,
             target = 1f,
+            stiffness = stiffness,
+            dampingRatio = damping,
             onUpdate = { p ->
                 val clamped = p.coerceIn(0f, 1f)
                 nowPlayingView.alpha = clamped
                 nowPlayingView.translationY = startOffset * (1f - p)
-                val npScale = 0.94f + 0.06f * p
+                val npScale = PageMotionSpec.LIBRARY_RECEDE_SCALE + (1f - PageMotionSpec.LIBRARY_RECEDE_SCALE) * p
                 nowPlayingView.scaleX = npScale
                 nowPlayingView.scaleY = npScale
-                val libScale = 1f - 0.03f * clamped
+                val libScale = PageMotionSpec.computeLibraryRecedeScale(clamped)
                 libraryView.scaleX = libScale
                 libraryView.scaleY = libScale
             },
@@ -1056,18 +1062,23 @@ class MainActivity : Activity(), AudioEngine.Listener, LibraryView.Callbacks, Pl
         SpringAnimatorHelper.cancelSpring(nowPlayingView)
         libraryView.visibility = View.VISIBLE
         val endOffset = (rootFrame.height * 0.08f).coerceAtLeast(32f)
+        val reduced = SpringAnimatorHelper.isReducedMotionEnabled(this)
+        val stiffness = if (reduced) SpringAnimatorHelper.SPRING_REDUCED_MOTION.stiffness else PageMotionSpec.PAGE_MORPH_STIFFNESS
+        val damping = if (reduced) SpringAnimatorHelper.SPRING_REDUCED_MOTION.dampingRatio else PageMotionSpec.PAGE_MORPH_DAMPING_RATIO
         SpringAnimatorHelper.animateSpring(
             key = nowPlayingView,
             start = 0f,
             target = 1f,
+            stiffness = stiffness,
+            dampingRatio = damping,
             onUpdate = { p ->
                 val clamped = p.coerceIn(0f, 1f)
                 nowPlayingView.alpha = 1f - clamped
                 nowPlayingView.translationY = endOffset * p
-                val npScale = 1f - 0.06f * p
+                val npScale = 1f - (1f - PageMotionSpec.LIBRARY_RECEDE_SCALE) * p
                 nowPlayingView.scaleX = npScale
                 nowPlayingView.scaleY = npScale
-                val libScale = 0.97f + 0.03f * clamped
+                val libScale = PageMotionSpec.computeLibraryRecedeScale(1f - clamped)
                 libraryView.scaleX = libScale
                 libraryView.scaleY = libScale
             },

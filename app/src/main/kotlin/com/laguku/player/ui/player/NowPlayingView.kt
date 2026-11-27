@@ -56,6 +56,7 @@ import com.laguku.player.ui.glass.CoverPaletteExtractor
 import com.laguku.player.ui.glass.InteractiveGlassScrubView
 import com.laguku.player.ui.glass.LiquidGlassDrawable
 import com.laguku.player.ui.motion.LiquidGlassPressAnimator
+import com.laguku.player.ui.motion.PageMotionSpec
 import com.laguku.player.ui.motion.SpringAnimatorHelper
 import kotlin.math.PI
 import kotlin.math.abs
@@ -453,9 +454,9 @@ class NowPlayingView(
     }
 
     object CoverAuraMath {
-        const val HALO_SCALE = 1.6f
+        const val HALO_SCALE = PageMotionSpec.COVER_AURA_SCALE_MULTIPLIER
         val STOPS = floatArrayOf(0f, 0.50f, 0.78f, 1f)
-        val ALPHAS = floatArrayOf(0.22f, 0.09f, 0.02f, 0f)
+        val ALPHAS = PageMotionSpec.COVER_AURA_ALPHA_STOPS
 
         fun haloRadius(coverSizePx: Float): Float = coverSizePx * HALO_SCALE * 0.5f
 

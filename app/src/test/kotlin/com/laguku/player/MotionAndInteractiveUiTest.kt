@@ -5,6 +5,7 @@ import com.laguku.player.ui.glass.InteractiveGlassScrubView
 import com.laguku.player.ui.glass.LiquidGlassDrawable
 import com.laguku.player.ui.library.LibraryView
 import com.laguku.player.ui.motion.LiquidGlassPressAnimator
+import com.laguku.player.ui.motion.PageMotionSpec
 import com.laguku.player.ui.motion.SpringAnimatorHelper
 import com.laguku.player.ui.player.LyricMotionSpec
 import com.laguku.player.ui.player.LyricsRecyclerAdapter
@@ -650,7 +651,7 @@ class MotionAndInteractiveUiTest {
 
     @Test
     fun coverAura_decaysToZeroBeforeHaloEdge() {
-        assertEquals(0.22f, NowPlayingView.CoverAuraMath.alphaAt(0f), 0.0001f)
+        assertEquals(0.24f, NowPlayingView.CoverAuraMath.alphaAt(0f), 0.0001f)
         assertEquals(0.09f, NowPlayingView.CoverAuraMath.alphaAt(0.50f), 0.0001f)
         assertEquals(0.02f, NowPlayingView.CoverAuraMath.alphaAt(0.78f), 0.0001f)
         assertEquals(0f, NowPlayingView.CoverAuraMath.alphaAt(1f), 0.0001f)
@@ -753,5 +754,29 @@ class MotionAndInteractiveUiTest {
 
         glass.setPressState(0f, 36f, 24f)
         assertEquals(0f, glass.getPressFraction(), 0.0001f)
+    }
+
+    @Test
+    fun pageMotionSpec_matchesCalibratedPhysicsAndStaggerAndAuraConstants() {
+        assertEquals(160f, PageMotionSpec.PAGE_MORPH_STIFFNESS, 0.0001f)
+        assertEquals(0.68f, PageMotionSpec.PAGE_MORPH_DAMPING_RATIO, 0.0001f)
+        assertEquals(0.94f, PageMotionSpec.LIBRARY_RECEDE_SCALE, 0.0001f)
+        assertEquals(35L, PageMotionSpec.LIBRARY_STAGGER_STEP_MS)
+        assertEquals(24f, PageMotionSpec.LIBRARY_ROW_ENTRY_OFFSET_DP, 0.0001f)
+        assertEquals(72f, PageMotionSpec.SWIPE_COMMIT_THRESHOLD_DP, 0.0001f)
+        assertEquals(0.68f, PageMotionSpec.SWIPE_RUBBER_BAND_RESISTANCE, 0.0001f)
+        assertTrue(PageMotionSpec.COMMIT_ON_RELEASE_ONLY)
+        assertEquals(1.60f, PageMotionSpec.COVER_AURA_SCALE_MULTIPLIER, 0.0001f)
+        assertEquals(4, PageMotionSpec.COVER_AURA_ALPHA_STOPS.size)
+        assertEquals(0.24f, PageMotionSpec.COVER_AURA_ALPHA_STOPS[0], 0.0001f)
+        assertEquals(0.09f, PageMotionSpec.COVER_AURA_ALPHA_STOPS[1], 0.0001f)
+        assertEquals(0.02f, PageMotionSpec.COVER_AURA_ALPHA_STOPS[2], 0.0001f)
+        assertEquals(0.00f, PageMotionSpec.COVER_AURA_ALPHA_STOPS[3], 0.0001f)
+
+        assertEquals(1f, PageMotionSpec.computeLibraryRecedeScale(0f), 0.0001f)
+        assertEquals(0.94f, PageMotionSpec.computeLibraryRecedeScale(1f), 0.0001f)
+        assertEquals(0L, PageMotionSpec.computeStaggerDelayMs(0))
+        assertEquals(105L, PageMotionSpec.computeStaggerDelayMs(3))
+        assertEquals(1.60f, NowPlayingView.CoverAuraMath.HALO_SCALE, 0.0001f)
     }
 }
